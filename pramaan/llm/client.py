@@ -31,6 +31,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from pramaan.config import LLM_CACHE_DIR, Config, load_config
 from pramaan.llm.cache import CacheMiss, LLMCache, cache_key
+from pramaan.llm.prompts import assert_no_identifiers
 
 TIERS: Tuple[str, ...] = ("strong", "fast")
 
@@ -161,6 +162,16 @@ class LLMClient:
         """
         if tier not in TIERS:
             raise ValueError("tier must be one of %r, got %r" % (TIERS, tier))
+
+        # A3 / F9 enforced at the chokepoint, not only where prompts are built.
+        # build_planner_prompt and build_investigator_prompt already screen their
+        # output, but they are not the only way a string can reach a provider --
+        # any future caller that assembles a prompt by hand would bypass them.
+        # Screening here makes the guarantee structural for every caller, which is
+        # the whole claim in prompts.py's docstring. The cost is a few regexes per
+        # call; the failure it prevents is silent (every call a cache miss, budget
+        # 800K -> 15M) and would surface days later as a token overrun.
+        assert_no_identifiers(prompt, context="llm.call prompt")
 
         params = self._params(schema, temperature, max_tokens)
         candidates = self._candidates(tier)

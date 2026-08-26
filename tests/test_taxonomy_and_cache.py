@@ -21,6 +21,7 @@ import pytest
 from pramaan import canonical, taxonomy
 from pramaan.llm.cache import CacheMiss, LLMCache, cache_key
 from pramaan.llm.client import MODELS, TIERS, LLMClient
+from pramaan.llm.prompts import PromptCanonicalityError
 from pramaan.config import Config
 
 # -- the taxonomy -----------------------------------------------------------
@@ -347,6 +348,59 @@ def test_a_keyless_client_is_offline():
     """NFR-4 by construction, not by remembering to set a flag."""
     client = LLMClient(Config(seed=42, mode="shadow", llm_offline=False))
     assert client.offline is True
+
+
+@pytest.mark.parametrize(
+    "poisoned",
+    [
+        "recover payment pay_JK4519lmnop",
+        "the amount was Rs 2437",
+        "it failed at 2026-08-01 14:32:07",
+        "reach them at someone@example.com",
+    ],
+)
+def test_the_client_screens_prompts_it_did_not_build(tmp_path, poisoned):
+    """A3 must hold at the chokepoint, not only where prompts are built.
+
+    build_planner_prompt and build_investigator_prompt screen their own output,
+    but they are not the only way a string can reach a provider. Any caller
+    added on Day 4 or later that assembles a prompt by hand would otherwise
+    bypass the screen entirely -- and the failure is silent: the call succeeds,
+    every call becomes a cache miss, and the budget goes 800K -> 15M without an
+    error anywhere. Screening in ``call`` is what makes the guarantee structural
+    rather than a habit, so it is pinned here.
+
+    Note this fires *before* the cache is consulted, so it cannot be dodged by a
+    warm cache either.
+    """
+    client = LLMClient(_offline_config(), cache_dir=tmp_path)
+    with pytest.raises(PromptCanonicalityError):
+        client.call(poisoned, tier="fast")
+
+
+def test_the_client_still_accepts_a_properly_built_prompt(tmp_path):
+    """The screen must not be so strict that the real prompts cannot pass.
+
+    A guard nobody can satisfy gets removed, so the actual planner prompt for a
+    real situation is asserted to survive it.
+    """
+    from pramaan.llm.prompts import build_planner_prompt
+
+    prompt = build_planner_prompt(
+        {
+            "reason_class": "FUNDS",
+            "diagnosis_class": "undiagnosed",
+            "amount_band": 2,
+            "segment": "metro",
+            "legal_context": "service",
+            "channel_eligibility": "full",
+            "hour_bucket": "business",
+        }
+    )
+    client = LLMClient(_offline_config(), cache_dir=tmp_path)
+    # Offline with an empty cache, so a CacheMiss means it got past the screen.
+    with pytest.raises(CacheMiss):
+        client.call(prompt, tier="fast")
 
 
 def test_an_offline_cache_miss_raises_an_actionable_error(tmp_path):
