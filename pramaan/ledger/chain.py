@@ -32,14 +32,20 @@ from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple
 
 from pramaan.canonical import GENESIS_HASH, canonical_json, parse_iso, sha256_hex
 
-#: Kinds emitted as of Day 1. Grows one entry at a time, on the day the writer
+#: Kinds emitted as of Day 2. Grows one entry at a time, on the day the writer
 #: lands. Planned, in the order the days add them: DIAGNOSIS and RECEIPT_AUDIT
-#: (Day 4), PLAN and GATE (Day 2/5), ACTION (Day 5), CONVERSE and PROMISE
-#: (Day 6/7), OUTCOME and EXCEPTION (Day 3/5).
-LEDGER_KINDS: Tuple[str, ...] = ("DETECT",)
+#: (Day 4), PLAN (Day 5), ACTION (Day 5), CONVERSE and PROMISE (Day 6/7),
+#: OUTCOME and EXCEPTION (Day 3/5).
+#:
+#: GATE joined on Day 2, and it has a real writer on the day it joined: the demo
+#: judges every event's deterministic default action through the envelope and
+#: records the verdict. ADR-011 is the reason that matters -- a kind is added
+#: when something writes it, not when something plans to.
+LEDGER_KINDS: Tuple[str, ...] = ("DETECT", "GATE")
 
-#: Verdicts a GATE row may carry. Empty until Day 2 writes the first one --
-#: same discipline as LEDGER_KINDS.
+#: Verdicts a GATE row may carry. Three, never two: AMEND is what the envelope
+#: returns when a step is substantively right and mechanically wrong, and
+#: collapsing it into REJECT would report a fixable plan as a refused one.
 DECISIONS: Tuple[str, ...] = ("ALLOW", "AMEND", "REJECT")
 
 SCHEMA = """
@@ -228,17 +234,38 @@ class Ledger:
 
     # -- verification (invariant I7) --------------------------------------
 
-    def verify_chain(self) -> ChainVerification:
+    def verify_chain(
+        self,
+        *,
+        expected_rows: Optional[int] = None,
+        expected_head: Optional[str] = None,
+    ) -> ChainVerification:
         """Recompute every row hash and check the links.
 
-        Detects three things, and it needs all three -- an attacker or a bug that
+        Detects four things, and it needs all four -- an attacker or a bug that
         only had to satisfy one of them would slip through:
 
         1. a mutated field, because the recomputed row_hash no longer matches;
         2. a broken link, because prev_hash no longer equals the previous
-           row_hash -- which is what catches a *deleted* row;
+           row_hash -- which is what catches a deleted *interior* row;
         3. a re-sequenced or gapped chain, because seq is folded into the hash
-           and also checked to be dense from 1.
+           and also checked to be dense from 1;
+        4. a **truncated tail**, but only if you tell it what to expect.
+
+        Point 4 is the one worth explaining, because it is the limit of what a
+        hash chain can do alone. Deleting the last *n* rows leaves a chain that
+        is internally perfect: every surviving row hashes correctly and every
+        link holds. There is nothing inside the table that says how long the
+        table should be. That matters here more than in a generic log -- once
+        OUTCOME rows exist, silently dropping the trailing ones is the cheapest
+        possible way to remove an unfavourable result, and it would still
+        verify.
+
+        So truncation detection needs an anchor from outside the table, and
+        ``expected_rows`` / ``expected_head`` are that anchor: the caller
+        already knows how many events it ingested, and the golden file already
+        records the head. Both are optional so existing callers keep working,
+        but a caller that *can* supply them should.
         """
         expected_prev = GENESIS_HASH
         expected_seq = 1
@@ -270,6 +297,23 @@ class Ledger:
             expected_prev = row["row_hash"]
             expected_seq = seq + 1
             checked += 1
+
+        # The tail checks. A truncated chain is internally consistent, so these
+        # are the only things that can catch it.
+        if expected_rows is not None and checked != expected_rows:
+            return ChainVerification(
+                False, checked, expected_prev,
+                "length mismatch: expected %d rows, found %d -- the chain is "
+                "internally consistent, so this is a truncated or extended "
+                "ledger rather than a mutated one"
+                % (expected_rows, checked),
+            )
+        if expected_head is not None and expected_prev != expected_head:
+            return ChainVerification(
+                False, checked, expected_prev,
+                "head mismatch: expected %s, found %s"
+                % (expected_head[:12], expected_prev[:12]),
+            )
         return ChainVerification(True, checked, expected_prev)
 
     # -- export ----------------------------------------------------------

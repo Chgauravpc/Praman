@@ -68,39 +68,82 @@ human ops lead does not re-think policy for every ticket either.
 
 ## Build status
 
-Day 1 of 8. **The spine is complete; the intelligence is not.** This section is
-accurate rather than aspirational, and will be updated as days land.
+Day 2 of 8. **The spine and the compliance gate are complete; the intelligence is
+not.** This section is accurate rather than aspirational, and is updated as days
+land.
 
 **Working:**
 
 - `RiskEvent` — the abstraction all five event types normalise into
 - SQLite event store, idempotent on `event_id` (webhooks are at-least-once)
 - Hash-chained, append-only ledger with tamper detection
+- **The policy envelope.** R1–R11 with an instrument and a citation grade each,
+  the `(legal_context × channel × hour)` window matrix, reversibility tiers
+  T0–T4, the eight decline-reason guardrails G1–G8, and the seven stopping rules
+  S1–S7 as independent predicates. `judge(step, context)` returns
+  ALLOW / AMEND / REJECT and always names the rule
 - LLM client and committed response cache — provider router, tier mapping, 429
   backoff honouring `Retry-After`, failover after consecutive 429s
 - Seeded simulator: payment failures weighted by the real reason distribution,
   each carrying a latent counterfactual
 - Canonical prompt construction, with the identifier screen and its invariant test
 
-**Not built yet:** the policy envelope (R1–R11), the investigator, the planner,
-the executor, the four remaining adapters, the voice channel, and the estimator
-that produces the headline number. There are no LLM calls in the pipeline yet —
-Day 1 spends zero tokens on purpose, so the foundation does not depend on a rate
-limit.
+**Not built yet:** the investigator, the planner, the executor, the four
+remaining adapters, the voice channel, and the estimator that produces the
+headline number. There are still no LLM calls in the pipeline — Days 1 and 2
+spend zero tokens on purpose, so neither the foundation nor the safety layer
+depends on a rate limit.
+
+### The envelope, and why it was built before the LLM
+
+The envelope is deterministic, has no clock and no I/O, and contains **zero
+import edges into `pramaan/llm/`** — checked by parsing imports, plus a
+subprocess check that importing it does not pull the LLM package in
+transitively. Its job is to catch the LLM, so it cannot be the LLM.
+
+Three examples of what it does, each with a test behind it:
+
+- A mandate retry with **no T−24h pre-debit notification** is refused citing
+  **R1** — and R1 measures the gap to the *debit*, not to the decision, so a
+  notification sent an hour ago is fine for tomorrow's retry and not for now.
+  That is why the retry scheduler and the notification scheduler have to be one
+  component.
+- A debt-collection contact at **19:05** is refused citing **R9**; the same
+  message at **18:55** is allowed, *also citing R9*. 19:00:00 exactly is
+  permitted and 19:00:01 is not, because RBI's wording prohibits contact "after
+  7:00 p.m." An allow needs a citation as much as a refusal does.
+- A retry on **`card_expired`** is refused as structurally futile — at any delay.
+  45 of the 69 documented decline reasons cannot be resolved by a retry, and in
+  the `RISK` and `ALREADY_PAID` classes retrying causes real harm rather than
+  merely wasting money.
+
+**Rule ids carry a prefix that declares their authority**, because a system that
+cites a regulator for a rule it invented is worth less than one that admits which
+is which: `R` regulation (each naming an instrument), `G` Razorpay
+decline-reason guardrail (futility, not law), `S` stopping rule, `P` house
+policy. Two of the eleven regulatory rules are currently verified against a
+primary instrument; the other nine say so.
+
+On the 6,000-event batch the envelope judges every one of the deterministic
+default actions and refuses none of them — which is the expected result, not an
+inert gate: that map is *built* compliant, which is what makes it a fair arm B
+rather than a strawman. The evidence that the envelope is not inert is
+`tests/test_redteam_envelope.py`: one engineered violation per rule R1–R11, each
+asserting the rule id rather than merely the refusal, all caught.
 
 ## Try it
 
 ```bash
 make demo        # 200-event dev batch, keyless, no network call
 make demo-full   # 6,000-event batch (sized from a power calculation)
-make test        # 140 tests, including the invariants below
+make test        # 226 tests, including the invariants below
 make verify      # tests, plus a byte-identical-output check across two runs
 ```
 
-`make demo` prints the ingest result, the ledger head hash, a live tamper
-demonstration, the reason distribution against its published ranges, the amount
-bands, the arm balance, the organic self-recovery rate, and the memoisation
-ratio.
+`make demo` prints the ingest result, the envelope's verdict on every event with
+the rule each one cited, the ledger head hash, a live tamper demonstration, the
+reason distribution against its published ranges, the amount bands, the arm
+balance, the organic self-recovery rate, and the memoisation ratio.
 
 ## The invariants
 
@@ -110,9 +153,16 @@ These are properties, each with a test, and they hold at every commit.
 |---|---|---|
 | **I1** | Replaying the webhook stream twice produces an identical ledger | `tests/test_idempotent_replay.py` |
 | **I2** | Two different events sharing a signature produce **byte-identical prompt bytes** | `tests/test_prompt_canonical.py` |
+| **I3** | The envelope returns a verdict **and a rule id** for every action × context | `tests/test_envelope_matrix.py` |
+| **I4** | Every rule R1–R11 catches its engineered violation | `tests/test_redteam_envelope.py` |
 | **I7** | The hash chain detects any row mutation, deletion or reordering | `tests/test_ledger_chain.py` |
 | **I8** | Same seed and same cache → byte-identical output | `make verify` |
 | **I9** | `make demo` completes with every API key unset | `make demo` |
+
+I3 is enumerated from the vocabularies themselves — every action × every legal
+context × twelve regulatory-edge timestamps × every reason class, 3,600
+combinations — so adding an action or a channel without judging it is a test
+failure rather than a silent hole in the gate.
 
 I2 is the one that matters most and the reason it is a Day 1 test rather than a
 Day 5 one. If a prompt embeds a `payment_id`, an exact rupee amount or a raw
@@ -147,6 +197,13 @@ pramaan/
 │   ├── schemas.py       Diagnosis, Claim, Receipt, RecoveryPlan, PlanStep
 │   ├── config.py        .env loading; no wall-clock, keys optional
 │   ├── cli.py           the demo
+│   ├── envelope/        the compliance gate — no LLM, by construction
+│   │   ├── rules.py       R1–R11, each with its instrument and grade
+│   │   ├── windows.py     the (context × channel × hour) matrix, as a table
+│   │   ├── reason_map.py  G1–G8, the decline-reason guardrails
+│   │   ├── tiers.py       T0–T4 reversibility and the gates each one clears
+│   │   ├── stopping.py    S1–S7 as independent predicates
+│   │   └── judge.py       the evaluation order, and why that order matters
 │   ├── sense/           RiskEvent, the event store
 │   ├── ledger/          the hash chain
 │   └── llm/             client, cache, prompt construction
@@ -166,6 +223,24 @@ pramaan/
 - **The event stream is synthetic.** The reason distribution is drawn from PSP
   audit figures that the source itself grades as directional, and it is used for
   its shape rather than its digits.
-- **Regulatory provisions R1–R11 are drawn from secondary summaries** and are
-  being verified against the primary RBI and TRAI instruments before they are
-  presented as legal thresholds.
+- **Nine of the eleven regulatory provisions are still graded [B]** — drawn from
+  secondary summaries of a named primary instrument, consistent across sources,
+  and not yet matched to a clause. The grade is recorded *in the rule*
+  (`envelope/rules.py`), and the code refuses at import to let a rule claim [A]
+  without quoting the operative words, so the count cannot drift upward by
+  optimism. **R9 is [A]:** RBI/2022-23/108,
+  `DOR.ORG.REC.65/21.04.158/2022-23`, 12 August 2022. The TRAI 09:00–21:00
+  figure everybody quotes is the one that could *not* be traced to a primary
+  clause, which was the opposite of what was expected.
+- **Whether a payment-retry message is a "service" or a "promotional"
+  communication is a legal judgment, and this repo assumes the former.** It is
+  the single biggest compliance assumption in the system, because the service
+  classification is what buys access to the 19:00–22:00 failure peak — the hours
+  when the most money is at risk. It is stated in `envelope/windows.py` rather
+  than buried, and it needs a lawyer and a correctly-categorised DLT template,
+  not more code.
+- **Some thresholds are ours, not a regulator's** — the ₹500 floor below which a
+  voice call is not worth placing, the ₹5,000 ceiling above which a concession
+  needs human approval, the per-counterparty contact budget. Every one of them
+  carries a `P` rule id precisely so that nobody mistakes a preference for an
+  obligation.

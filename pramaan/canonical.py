@@ -204,17 +204,40 @@ ACTIONS: Tuple[str, ...] = (
 # the bucket carries the same kind of free compliance information the amount
 # bands do:
 #
-#   business      08:00-19:00 IST   every contact window open, R9 included
+#   business      08:00-19:00 IST   see the KNOWN GAP below
 #   evening_peak  19:00-21:00 IST   R5/R8 still open; R9 debt collection CLOSED
 #   night         21:00-08:00 IST   every outbound contact window closed
 #
-#   R5  promotional SMS   09:00-21:00
-#   R8  commercial voice  09:00-21:00
-#   R9  debt collection   08:00-19:00
+#   R5  promotional SMS   09:00-21:00   [B] -- unverified, see SAFETY.md when it exists
+#   R8  commercial voice  09:00-21:00   [B]
+#   R9  debt collection   08:00-19:00   [B]
 #
 # 08:00 and 21:00 are the outer union of those windows; 19:00 is R9's ceiling.
-# Three buckets is the minimum that keeps the collection/promotional distinction
-# visible, which is exactly what legal_context has to be read against.
+#
+# KNOWN GAP -- 08:00-09:00 IST is a fourth legal state, and three buckets cannot
+# hold it. R9 opens at 08:00 but R5 and R8 do not open until 09:00, so the real
+# state space is:
+#
+#   00:00-08:00   everything closed
+#   08:00-09:00   R9 open, R5/R8 CLOSED      <- not representable here
+#   09:00-19:00   everything open
+#   19:00-21:00   R5/R8 open, R9 closed
+#   21:00-24:00   everything closed
+#
+# This bucketing merges 08:00-09:00 into "business", so channel_eligibility can
+# return "full" -- voice permitted -- during an hour when the R8 voice window is
+# shut. In the seeded 6,000-event batch that is 322 events (5.4%), of which 166
+# are marked "full" and 24 are offered ACT_VOICE. Nothing acts on them today
+# (there is no executor yet), so no rule has actually been broken -- but the
+# feature Day 2's envelope inherits already disagrees with the rule it cites.
+#
+# Deliberately NOT fixed here. hour_bucket is one of the seven frozen signature
+# fields (F7) and its domain is frozen precisely so that Day 2's handover cannot
+# invalidate the cache, so adding a bucket is a frozen-decision change; and
+# whether R5/R8 bind a service-context recovery call at 08:30 is a [B] figure
+# that has not been checked against a primary TRAI instrument. HANDOFF 9 says
+# stop and ask on both counts. Resolve the regulation first, then decide the
+# bucket count -- do not guess the boundary into the cache key.
 
 HOUR_BUCKETS: Tuple[str, ...] = ("business", "evening_peak", "night")
 
@@ -258,44 +281,58 @@ CHANNEL_ELIGIBILITY: Tuple[str, ...] = (
 def channel_eligibility(
     reason_class: str, legal_context: str, hour_bucket_value: str
 ) -> str:
-    """Coarse contact permission. Deliberately conservative.
+    """Coarse contact permission. A cache key, **not** a gate.
 
-    Two independent reasons contact can be closed, and either alone is enough:
+    Day 2 took ownership of the derivation, as STATE.md said it would: the body
+    now lives in ``pramaan.envelope.windows``, beside the rules it cites. This
+    function stays as the signature-feature entry point so that F7 is untouched
+    and the cache key is computed from the same place it always was.
 
-    - The reason class forbids it outright. MERCHANT_CONFIG is the merchant's own
-      configuration and ALREADY_PAID is the anti-humiliation tripwire (S1);
-      contacting the customer is wrong at any hour. INTEGRATION_BUG and RISK
-      likewise never reach a customer.
-    - The hour closes the window. R9 shuts debt collection at 19:00 while R5/R8
-      run to 21:00, so a collection context goes silent two hours earlier than a
-      service one.
+    What did *not* change is the output for any input, and that was the point of
+    the handover rather than an accident of it. ``channel_eligibility`` is one of
+    the seven frozen signature fields; changing its values churns every cached
+    plan, and the values themselves are a coarse hint computed from a three-value
+    hour bucket that provably cannot represent the 08:00-09:00 legal state.
+
+    So this feature is allowed to be optimistic, and the envelope is the
+    authority. At 08:30 in a service context this returns ``full`` -- voice
+    permitted -- while ``envelope.judge`` refuses the call citing R8, whose
+    window does not open until 09:00. The disagreement is deliberate, pinned by
+    ``tests/test_envelope_matrix.py``, and safe in exactly one direction: a
+    permissive cache key costs nothing because no action is taken on it, whereas
+    a permissive *gate* would be a compliance breach.
     """
-    from pramaan.taxonomy import NO_CONTACT_CLASSES  # local import: avoids a cycle
+    from pramaan.envelope.windows import (  # local import: avoids a cycle
+        channel_eligibility_for_bucket,
+    )
 
-    if reason_class in NO_CONTACT_CLASSES:
-        return "silent_only"
-    if hour_bucket_value == "night":
-        return "silent_only"
-    if hour_bucket_value == "evening_peak":
-        # R9: debt-collection contact is not permitted after 19:00.
-        return "silent_only" if legal_context == "collection" else "silent_and_message"
-    # business hours
-    if legal_context == "promotional":
-        # A promotional touch never earns a phone call in this system.
-        return "silent_and_message"
-    return "full"
+    return channel_eligibility_for_bucket(
+        reason_class, legal_context, hour_bucket_value
+    )
 
 
 # --------------------------------------------------------------------------
 # The planner signature -- FROZEN at exactly seven fields (F7)
 # --------------------------------------------------------------------------
 #
-# Nominal space 10 x 10 x 5 x 3 x 3 x 3 x 3 = 40,500. Observed in a 6,000-event
-# batch: ~100-200, because most combinations are structurally unreachable
-# (MERCHANT_CONFIG never reaches the planner at all -- the envelope handles it;
-# INSTRUMENT_DEAD never co-occurs with an issuer_degraded diagnosis) and real
-# traffic is concentrated (PRD 5.1: three reason classes are 70-100% of volume).
-# That gap is the ~30x memoisation ratio.
+# Nominal space is 10 x 11 x 5 x 3 x 3 x 3 x 3 = 44,550. (BUILD-PLAN 1.5 quotes
+# 40,500 from ten diagnosis classes; there are eleven, because "undiagnosed" is a
+# live value for arm B rather than a placeholder.)
+#
+# MEASURED on the seeded 6,000-event batch: 273 distinct signatures, a ratio of
+# 22.0x. The build plan predicted ~100-200 and ~30x; the measured figures are the
+# ones to quote. The gap to nominal holds because most combinations are
+# structurally unreachable (MERCHANT_CONFIG never reaches the planner at all --
+# the envelope handles it; INSTRUMENT_DEAD never co-occurs with an
+# issuer_degraded diagnosis) and real traffic is concentrated (PRD 5.1: three
+# reason classes are 70-100% of volume).
+#
+# Read 22.0x as an UPPER BOUND on today's data, not a prediction. Two of the
+# seven fields are currently pinned to one value -- diagnosis_class (no
+# investigator until Day 4) and legal_context (payment failures only until the
+# Day 6 receivables adapter) -- so the effective space today is 1,350, not
+# 44,550, and 273 of those 1,350 are already occupied. The ratio will fall as
+# each field goes live.
 #
 # Adding a field can multiply the signature space. Do not add one.
 

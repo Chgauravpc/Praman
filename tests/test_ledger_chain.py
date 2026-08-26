@@ -85,7 +85,11 @@ def test_editing_a_payload_breaks_the_chain(ledger):
     "column,value",
     [
         ("ts", "2026-09-09T09:09:09+05:30"),
-        ("kind", "DETECT"),
+        # Not "DETECT": that is the only kind Day 1 emits, so the row already
+        # holds it and the skip guard below fired every run -- leaving the kind
+        # column, alone among the hashed columns, never actually tamper-tested.
+        # Raw SQL has no CHECK constraint to satisfy, so any string works here.
+        ("kind", "GATE"),
         ("arm", "A"),
         ("cost_paise", 4200),
         ("rule_fired", "R9"),
@@ -145,6 +149,57 @@ def test_an_appended_row_cannot_be_forged(ledger):
     assert not ledger.verify_chain().ok
 
 
+def test_a_truncated_tail_is_invisible_without_an_anchor(ledger):
+    """The limit of a hash chain, asserted rather than left implicit.
+
+    Deleting the last rows leaves every surviving row correct and every link
+    intact, so re-hashing cannot find it. This test exists so that the day
+    somebody "fixes" verify_chain to be anchor-free, the reason the anchor is
+    there is written down in a failing test.
+    """
+    _fill(ledger, 5)
+    ledger.conn.execute("DELETE FROM ledger WHERE seq > 2")
+    assert ledger.verify_chain().ok  # internally perfect, and still wrong
+    assert ledger.verify_chain().rows_checked == 2
+
+
+def test_the_length_anchor_catches_a_truncated_tail(ledger):
+    _fill(ledger, 5)
+    head = ledger.head_hash()
+    assert ledger.verify_chain(expected_rows=5, expected_head=head).ok
+
+    ledger.conn.execute("DELETE FROM ledger WHERE seq > 3")
+    result = ledger.verify_chain(expected_rows=5)
+    assert not result.ok
+    assert "length mismatch" in result.error
+
+
+def test_the_head_anchor_catches_a_truncated_tail(ledger):
+    """Either anchor alone is sufficient; the head is the stronger of the two.
+
+    A row count can be restored by appending plausible filler. The head hash
+    cannot be, which is why the golden file records it.
+    """
+    _fill(ledger, 5)
+    head = ledger.head_hash()
+    ledger.conn.execute("DELETE FROM ledger WHERE seq > 3")
+    result = ledger.verify_chain(expected_head=head)
+    assert not result.ok
+    assert "head mismatch" in result.error
+
+    # Refilling to the original length satisfies the count but not the head.
+    _fill(ledger, 2)
+    assert ledger.verify_chain(expected_rows=5).ok
+    assert not ledger.verify_chain(expected_head=head).ok
+
+
+def test_the_anchors_are_optional_and_default_to_the_old_behaviour(ledger):
+    _fill(ledger, 3)
+    assert ledger.verify_chain().ok
+    assert ledger.verify_chain(expected_rows=3).ok
+    assert ledger.verify_chain(expected_head=ledger.head_hash()).ok
+
+
 def test_the_head_hash_changes_with_every_append(ledger):
     seen = {ledger.head_hash()}
     for index in range(6):
@@ -170,14 +225,22 @@ def test_export_round_trips_byte_stably(tmp_path):
 
 
 def test_the_exported_ledger_matches_the_golden_file():
-    """The Day 1 golden file. A behaviour change must show up as a diff.
+    """The golden file. A behaviour change must show up as a diff.
 
     Regenerate deliberately, and read the diff before accepting it:
         python -m pramaan.cli demo --dev
         cp build/ledger-dev.jsonl tests/golden/ledger.jsonl
+
+    Note that this reproduces the demo's *whole* write path -- ingest, then the
+    envelope gate -- rather than just ingest. It has to: ``make golden`` copies
+    what the demo wrote, so a golden test that built a shorter ledger would go
+    green while comparing against a file it could never produce. From Day 2 the
+    demo writes GATE rows, so the golden file contains them and this test
+    generates them.
     """
     from pathlib import Path
 
+    from pramaan.cli import gate_events
     from pramaan.config import GOLDEN_DIR
 
     golden = GOLDEN_DIR / "ledger.jsonl"
@@ -186,7 +249,9 @@ def test_the_exported_ledger_matches_the_golden_file():
 
     conn = connect(None)
     store, ledger = EventStore(conn), Ledger(conn)
-    ingest(store, ledger, sim.dev_batch(42))
+    events = sim.dev_batch(42)
+    ingest(store, ledger, events)
+    gate_events(events, ledger)
     import tempfile
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -206,3 +271,90 @@ def test_cost_paise_must_be_an_integer(ledger):
 def test_an_unknown_decision_is_rejected(ledger):
     with pytest.raises(ValueError, match="unknown decision"):
         ledger.append("DETECT", ts=TS, payload={}, decision="MAYBE")
+
+def test_the_demo_tamper_probe_actually_tampers():
+    """The probe the demo prints must not be able to become a no-op.
+
+    This is a regression test for a real Day 2 failure. ``_tamper_probe`` picked
+    "the middle row" and edited an ``amount_at_risk_paise`` field in it. That
+    worked while every row was a DETECT row. The moment GATE rows joined the
+    ledger the middle row was a GATE row, which carries no amount, so the SQL
+    ``replace()`` matched nothing, the chain verified correctly, and the demo
+    printed "FAILED -- a mutated row went undetected" -- reporting a
+    tamper-evidence failure that was really an inert probe.
+
+    A demo that prints a tamper probe is making a claim on screen, so the probe
+    needs its own test: it must pick a row it can actually change, confirm the
+    row changed, and only then report on detection. Two assertions here, and the
+    second is the one that would have caught the original bug: the outcome must
+    be "detected", and it must never be the inconclusive branch.
+    """
+    from pramaan.cli import _tamper_probe, gate_events
+
+    conn = connect(None)
+    store, ledger = EventStore(conn), Ledger(conn)
+    events = sim.dev_batch(42)
+    ingest(store, ledger, events)
+    gate_events(events, ledger)
+
+    # A mixed-kind ledger, which is the condition that broke the probe.
+    kinds = dict(ledger.kind_counts())
+    assert kinds == {"DETECT": len(events), "GATE": len(events)}
+
+    outcome = _tamper_probe(conn)
+    conn.close()
+    assert outcome.startswith("detected"), outcome
+    assert "inconclusive" not in outcome
+    assert "FAILED" not in outcome
+
+
+def test_a_gate_row_carries_its_verdict_and_its_rule_in_dedicated_columns():
+    """"How often did R9 refuse an evening collection attempt?" is a GROUP BY.
+
+    That is the whole reason ``rule_fired`` and ``decision`` are columns rather
+    than payload keys: a compliance question should be a query against the
+    ledger, not a grep through a log.
+    """
+    from pramaan.envelope import EnvelopeContext, Step, judge
+
+    conn = connect(None)
+    ledger = Ledger(conn)
+    judgement = judge(
+        Step("ACT_MESSAGE", "sms"),
+        EnvelopeContext(
+            at="2026-08-03T19:05:00+05:30",
+            legal_context="collection",
+            reason_code="insufficient_funds",
+            dlt_template_id="1207x",
+            self_identification_scripted=True,
+        ),
+    )
+    fields = judgement.ledger_fields()
+    row = ledger.append(
+        "GATE",
+        ts="2026-08-03T19:05:00+05:30",
+        payload=fields["payload"],
+        rule_fired=fields["rule_fired"],
+        decision=fields["decision"],
+    )
+    assert row.decision == "REJECT"
+    assert row.rule_fired == "R9"
+    assert ledger.verify_chain().ok
+
+    grouped = conn.execute(
+        "SELECT rule_fired, decision, COUNT(*) AS n FROM ledger "
+        "WHERE kind = 'GATE' GROUP BY rule_fired, decision"
+    ).fetchall()
+    assert [(r["rule_fired"], r["decision"], r["n"]) for r in grouped] == [
+        ("R9", "REJECT", 1)
+    ]
+    conn.close()
+
+
+def test_an_unknown_ledger_kind_is_still_rejected(ledger):
+    """ADR-011 holds with two kinds as it did with one."""
+    from pramaan.ledger.chain import LEDGER_KINDS
+
+    assert LEDGER_KINDS == ("DETECT", "GATE")
+    with pytest.raises(ValueError):
+        ledger.append("PLAN", ts=TS, payload={})
