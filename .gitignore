@@ -1,0 +1,18 @@
+# secrets — never commit
+.env
+
+# build artefacts
+build/
+*.db
+*.db-journal
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# the committed LLM cache is deliberate infrastructure (see DECISIONS.md ADR-006).
+# Do NOT add fixtures/llm_cache/ here.
+
+# local agent settings — not part of the public deliverable
+.claude/

@@ -1,0 +1,5 @@
+# Byte-exactness is a load-bearing property of this repo (NFR-3, invariant I8):
+# the golden ledger and the committed LLM cache are compared byte-for-byte on a
+# reviewer's machine. Normalise every text file to LF in the working tree so a
+# Windows checkout produces the same bytes a Linux checkout does.
+* text=auto eol=lf

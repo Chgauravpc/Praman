@@ -1,0 +1,11 @@
+# Runtime
+pydantic>=2.6,<3          # schemas for LLM structured output
+python-dotenv>=1.0        # .env loading
+requests>=2.31            # LLM provider HTTP (Groq / OpenRouter)
+
+# Dev / test
+pytest>=8.0
+
+# Deliberately absent (HANDOFF.md A10): no postgres driver, no docker SDK,
+# no neo4j, no vector store, no numpy/scipy. SQLite + stdlib statistics carry
+# the whole build. See DECISIONS.md ADR-001.
