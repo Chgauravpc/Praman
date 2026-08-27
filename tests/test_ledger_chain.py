@@ -231,17 +231,24 @@ def test_the_exported_ledger_matches_the_golden_file():
         python -m pramaan.cli demo --dev
         cp build/ledger-dev.jsonl tests/golden/ledger.jsonl
 
-    Note that this reproduces the demo's *whole* write path -- ingest, then the
-    envelope gate -- rather than just ingest. It has to: ``make golden`` copies
-    what the demo wrote, so a golden test that built a shorter ledger would go
-    green while comparing against a file it could never produce. From Day 2 the
-    demo writes GATE rows, so the golden file contains them and this test
-    generates them.
+    Note that this reproduces the demo's *whole* write path -- ingest, the
+    envelope gate, then outcome resolution -- rather than just ingest. It has to:
+    ``make golden`` copies what the demo wrote, so a golden test that built a
+    shorter ledger would go green while comparing against a file it could never
+    produce.
+
+    The write path has grown once per day it gained a writer, and the order is
+    load-bearing because the hash chain is order-dependent. DETECT and GATE from
+    Days 1-2; OUTCOME and EXCEPTION from Day 3, which must run *after* the gate
+    because that is the order ``run_demo`` writes them in. Getting this wrong
+    fails loudly here rather than quietly in the golden file, which is the point
+    of comparing whole files instead of row counts.
     """
     from pathlib import Path
 
     from pramaan.cli import gate_events
     from pramaan.config import GOLDEN_DIR
+    from pramaan.eval.resolve import resolve_batch
 
     golden = GOLDEN_DIR / "ledger.jsonl"
     if not golden.exists():
@@ -252,6 +259,7 @@ def test_the_exported_ledger_matches_the_golden_file():
     events = sim.dev_batch(42)
     ingest(store, ledger, events)
     gate_events(events, ledger)
+    resolve_batch(events, ledger=ledger)
     import tempfile
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -352,9 +360,20 @@ def test_a_gate_row_carries_its_verdict_and_its_rule_in_dedicated_columns():
 
 
 def test_an_unknown_ledger_kind_is_still_rejected(ledger):
-    """ADR-011 holds with two kinds as it did with one."""
+    """ADR-011 holds with four kinds as it did with one.
+
+    The pin is deliberately exact rather than a membership check. A kind joins
+    the enum on the day its writer lands, so the set growing is a decision
+    somebody made and should show up as a diff in this line -- ``in
+    LEDGER_KINDS`` would let a kind be added with no writer and no reviewer.
+
+    Day 3 added OUTCOME (one row per event per run) and EXCEPTION (written only
+    when an arm wanted to act and could not). PLAN is still absent because
+    nothing writes it until Day 5, which is what the second half of this test
+    asserts.
+    """
     from pramaan.ledger.chain import LEDGER_KINDS
 
-    assert LEDGER_KINDS == ("DETECT", "GATE")
+    assert LEDGER_KINDS == ("DETECT", "GATE", "OUTCOME", "EXCEPTION")
     with pytest.raises(ValueError):
         ledger.append("PLAN", ts=TS, payload={})

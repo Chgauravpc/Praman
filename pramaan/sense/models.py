@@ -77,13 +77,67 @@ class LatentTruth:
     wrong UPI PIN and retry inside their banking app -- so a large share of
     "recovered" revenue was never lost. This field is how that share gets
     subtracted instead of claimed.
+
+    **The Day 3 fields below exist so that an intervention's effect is derived
+    rather than declared** (ADR-024). The cheap way to simulate arm B would be a
+    per-action uplift table -- ``P(recover | ACT_RETRY, FUNDS) = organic + 0.12``
+    -- and it is worthless, because the answer is then whatever number was typed
+    into the table. Instead the world carries the two things an intervention
+    actually interacts with, and the uplift falls out:
+
+    ``capability_clears_at``
+        When the *blocking condition* stops blocking, whether or not the customer
+        does anything. The balance arrives; the bank comes back; the daily cap
+        resets. A merchant-initiated retry needs only this.
+
+    ``has_intent``
+        Whether the customer still wants this payment to complete. A message
+        supplies a reminder, not money -- so it can only convert someone who has
+        intent. Everyone who self-recovers has intent by definition; the
+        interesting population is those who have intent and never got round to it.
+
+    So ``self_recovers_at`` decomposes: the customer paid unaided at tau because
+    the block cleared at some earlier point and then they took a while to notice.
+    A retry captures precisely that noticing lag, and nothing else. That is the
+    mechanism, and it is why the estimate is not a restatement of an assumption.
+
+    The three ``would_*`` fields are drawn at generation rather than at
+    resolution, and that is load-bearing rather than tidy: it makes *both*
+    potential outcomes exactly computable for every event, which is what lets
+    ``tests/test_estimator_unbiased.py`` compare the arm-based estimate against an
+    oracle ATE with no Monte-Carlo error of its own.
     """
 
     self_recovers_at: Optional[str] = None
 
+    #: When the blocking condition clears, independent of the customer. None
+    #: means it never clears for this event on this instrument.
+    capability_clears_at: Optional[str] = None
+
+    #: Does the customer still want to pay? Reachable by a reminder.
+    has_intent: bool = False
+
+    #: Would a rail switch clear this particular block? Only meaningful for the
+    #: classes where the block is rail-specific (LIMIT, TECH_TRANSIENT).
+    route_would_succeed: bool = False
+
+    #: How long after receiving a message the customer acts, or None if they
+    #: would ignore it. Separate from has_intent: intent is wanting to pay,
+    #: this is answering a specific message.
+    message_response_lag_seconds: Optional[int] = None
+
+    #: The same for a voice call. Unused by arm B -- no reason class defaults to
+    #: a phone call -- and present so arm C is not measured against a world that
+    #: was built after seeing it.
+    voice_response_lag_seconds: Optional[int] = None
+
     @property
     def self_recovers(self) -> bool:
         return self.self_recovers_at is not None
+
+    @property
+    def capability_ever_clears(self) -> bool:
+        return self.capability_clears_at is not None
 
 
 @dataclass(frozen=True)

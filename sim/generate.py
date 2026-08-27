@@ -28,13 +28,14 @@ table and excluded from the prompt feature set by construction.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import timedelta
 from random import Random
 from typing import Dict, Iterator, List, Sequence, Tuple
 
 from pramaan import canonical
 from pramaan.config import SIM_EPOCH
+from pramaan.eval.arms import ArmAssigner as _ArmAssigner
 from pramaan.sense.models import Counterparty, LatentTruth, RiskEvent
 from pramaan.taxonomy import BY_CODE, CODES_BY_CLASS, REASON_CLASS_POLICY
 
@@ -262,40 +263,19 @@ def _lognormal_paise(rng: Random) -> int:
 # --------------------------------------------------------------------------
 
 
-class ArmAssigner:
-    """Equal thirds across A/B/C, stratified, assigned at detection.
-
-    Three properties, each from PRD 8.1 and each with a reason:
-
-    **Stratified on (source_type, amount_band, segment).** Order amounts are
-    heavy-tailed, so a simple coin flip lets a handful of very large payments
-    stack into one arm by luck and swamp the money metric. Stratification is what
-    stops the estimate being decided by four outliers.
-
-    **Permuted blocks of three.** Within a stratum the arms cycle through a
-    shuffled A/B/C, so the split is near-exact at every prefix of the stream
-    rather than only in expectation. That matters for a partially-completed batch.
-
-    **At detection, before the settle window.** Assigning later would condition
-    on post-treatment information -- whether the payment had already self-healed
-    -- and that quietly destroys the experiment.
-
-    Its own RNG, separate from the event stream, so that changing assignment
-    logic does not shift the events themselves.
-    """
-
-    def __init__(self, seed: int) -> None:
-        self.rng = Random(seed ^ 0x5A17)
-        self._blocks: Dict[Tuple[str, int, str], List[str]] = {}
-
-    def assign(self, source_type: str, amount_band: int, segment: str) -> str:
-        stratum = (source_type, amount_band, segment)
-        block = self._blocks.get(stratum)
-        if not block:
-            block = list(canonical.ARMS)
-            self.rng.shuffle(block)
-            self._blocks[stratum] = block
-        return block.pop()
+#: Arm assignment moved to ``pramaan/eval/arms.py`` on Day 3, and is re-exported
+#: here so that ``sim.generate.ArmAssigner`` keeps working for anything that
+#: already imported it. It belongs with the experiment rather than the simulator:
+#: in production the assigner runs on real detected events and this module does
+#: not exist at all.
+#:
+#: **The move preserves every value**, which is asserted rather than asserted-in-
+#: prose. ``tests/test_arms.py`` pins the arm vectors by SHA-256 against figures
+#: measured at commit ``3edae60``, before the move: ``e259c0a446ac7ca1`` for the
+#: 200-event dev batch (68/67/65) and ``56e5b02860e48e36`` for the 6,000-event
+#: full batch (2003/2001/1996). ADR-023 forbids a test that compares a function
+#: to its own delegate, so the pin is against recorded constants.
+ArmAssigner = _ArmAssigner
 
 
 # --------------------------------------------------------------------------
@@ -454,6 +434,19 @@ def generate(count: int, seed: int = 42, days: int = 0) -> List[RiskEvent]:
     # the store's canonical order, and tests/test_idempotent_replay.py shuffles it
     # to prove ingestion does not depend on arrival order.
     events.sort(key=lambda e: (e.detected_at, e.event_id))
+
+    # Day 3: fill in the capability/intent latents. Done here, unconditionally,
+    # rather than left to the caller -- because a caller who forgot would get
+    # events whose capability_clears_at is None, which the oracle reads as "this
+    # block never clears", which makes every intervention fail silently and the
+    # incremental figure zero. A wrong number that looks like a real one is the
+    # worst available outcome, so there is no unenriched path to forget.
+    #
+    # The import is deferred: sim.latent reads SELF_RECOVERY out of this module,
+    # so a module-level import either way round would be circular.
+    from sim.latent import enrich
+
+    events = [replace(e, latent=enrich(e, seed)) for e in events]
     return events
 
 

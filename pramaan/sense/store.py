@@ -53,7 +53,22 @@ CREATE INDEX IF NOT EXISTS idx_events_counterparty ON events (counterparty_id);
 -- deliberately not exposed through any view. See models.LatentTruth.
 CREATE TABLE IF NOT EXISTS latent (
     event_id         TEXT PRIMARY KEY,
-    self_recovers_at TEXT             -- NULL means: never recovers on its own
+    self_recovers_at TEXT,            -- NULL means: never recovers on its own
+
+    -- Day 3. The capability/intent decomposition (sim/latent.py): what an
+    -- intervention actually interacts with, so that arm B's effect is derived
+    -- rather than declared.
+    --
+    -- These live in the quarantined table for exactly the same reason
+    -- self_recovers_at does (ADR-010), and one of them is arguably worse: an
+    -- investigator that could read has_intent would know which customers will
+    -- respond before contacting any of them, which is not a diagnosis, it is the
+    -- answer key with extra steps.
+    capability_clears_at         TEXT,     -- NULL means the block never clears
+    has_intent                   INTEGER,  -- 0/1
+    route_would_succeed          INTEGER,  -- 0/1
+    message_response_lag_seconds INTEGER,  -- NULL means they would ignore it
+    voice_response_lag_seconds   INTEGER   -- NULL means they would not answer
 );
 
 -- Run provenance. This is why the ledger does not need a run-header row: the
@@ -119,8 +134,20 @@ class EventStore:
         inserted = cur.rowcount == 1
         if inserted and event.latent is not None:
             self.conn.execute(
-                "INSERT OR IGNORE INTO latent (event_id, self_recovers_at) VALUES (?, ?)",
-                (event.event_id, event.latent.self_recovers_at),
+                "INSERT OR IGNORE INTO latent ("
+                " event_id, self_recovers_at, capability_clears_at, has_intent,"
+                " route_would_succeed, message_response_lag_seconds,"
+                " voice_response_lag_seconds"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    event.event_id,
+                    event.latent.self_recovers_at,
+                    event.latent.capability_clears_at,
+                    int(event.latent.has_intent),
+                    int(event.latent.route_would_succeed),
+                    event.latent.message_response_lag_seconds,
+                    event.latent.voice_response_lag_seconds,
+                ),
             )
         return inserted
 
@@ -171,12 +198,33 @@ class EventStore:
             yield RiskEvent.from_row(dict(row), latent)
 
     def _latent(self, event_id: str) -> Optional[LatentTruth]:
+        """Read ground truth back out of the quarantined table.
+
+        Every Day 3 column is read explicitly rather than with ``SELECT *``. The
+        reason is a failure mode this project has already met once: a reader that
+        silently returned the old two-field shape would give the oracle
+        ``capability_clears_at = None`` for every event, the oracle would read
+        that as "this block never clears", every intervention would fail, and the
+        incremental figure would come out at zero. Nothing would raise. Naming the
+        columns means a schema that has drifted fails here instead.
+        """
         row = self.conn.execute(
-            "SELECT self_recovers_at FROM latent WHERE event_id = ?", (event_id,)
+            "SELECT self_recovers_at, capability_clears_at, has_intent,"
+            " route_would_succeed, message_response_lag_seconds,"
+            " voice_response_lag_seconds"
+            " FROM latent WHERE event_id = ?",
+            (event_id,),
         ).fetchone()
         if row is None:
             return None
-        return LatentTruth(self_recovers_at=row["self_recovers_at"])
+        return LatentTruth(
+            self_recovers_at=row["self_recovers_at"],
+            capability_clears_at=row["capability_clears_at"],
+            has_intent=bool(row["has_intent"]),
+            route_would_succeed=bool(row["route_would_succeed"]),
+            message_response_lag_seconds=row["message_response_lag_seconds"],
+            voice_response_lag_seconds=row["voice_response_lag_seconds"],
+        )
 
     # -- projections used by the demo summary ----------------------------
 

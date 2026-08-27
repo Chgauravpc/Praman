@@ -630,3 +630,277 @@ cell differs from the plausible wrong answer, so a collapse back into tautology
 trips something. And the general rule: if a test would pass after deleting the
 code it tests, it is documentation with a `def` in front of it.
 
+---
+
+## ADR-024 — An intervention's effect is derived from a world model, never declared as an uplift
+
+**Date:** 2026-08-27 (Day 3)
+**Status:** accepted
+
+### Context
+
+Arm B needs outcomes. The cheap way to get them is one number per action:
+
+```python
+P(recover | ACT_RETRY, FUNDS) = organic_rate + 0.12
+```
+
+Two hours of work, and it produces a headline number.
+
+### Decision
+
+Do not do that. Model **capability** (when the blocking condition stops blocking)
+and **intent** (whether the customer still wants to pay) as separate latents, and
+let the uplift fall out of how each intervention interacts with them.
+
+A merchant-initiated retry supplies intent and needs capability, so it converts
+*capability without intent*. A message supplies a reminder and needs capability
+unless the block **was** the customer not having acted yet, so it converts *intent
+that never got round to it*.
+
+### Why
+
+The uplift table is worthless in a specific and fatal way: **the headline
+incremental number then *is* the 0.12, restated.** A reviewer asking "where does
+0.12 come from" has no answer.
+
+Worse, it silently destroys the one defence the project has against "your
+simulator is made up". BUILD-PLAN Day 3 requires an organic-recovery sensitivity
+sweep in the standard output. Under an uplift table that sweep moves the baseline
+and leaves the uplift untouched, so **every row prints the same incremental
+figure** and the table proves nothing at all. Under a capability/intent model,
+raising organic recovery genuinely eats the headroom an intervention has to work
+in, and the measured estimand falls +3.25pp → +2.33pp across 15%→70% — a 28%
+decline, non-proportional, which is a real answer to a real objection.
+
+The parameters are still judgement (**[C]**). But they are claims **about the
+world** rather than about the size of the effect, which is a different kind of
+assumption and a defensible one. And the effect being derived means it can be
+wrong in ways the author did not choose.
+
+### Consequences
+
+- `LatentTruth` gains five fields; the quarantined table gains five columns.
+- All of them are drawn at **generation**, so resolution is a pure function and
+  both potential outcomes are exactly computable — which is what makes
+  `tests/test_estimator_unbiased.py` a proof rather than a smell test (ADR-025).
+- Draws come from a per-event RNG keyed on `sha256(seed | event_id)`, never from
+  the generator's shared stream. Taking one extra draw there would shift every
+  subsequent event's reason code and amount, moving the Day 1 golden ledger, the
+  22.0× memoisation ratio and the 4,905/1,095 envelope tally — for nothing.
+  Verified: all three unchanged.
+- One independent check: the world model and the Day 1 taxonomy were written
+  separately and agree. `AUTH_DROPOFF.retry_needs_customer` is True because a
+  merchant charge cannot supply a PIN, and the taxonomy independently answers
+  AUTH_DROPOFF with `ACT_WAIT`. Weak evidence, better than none.
+
+---
+
+## ADR-025 — Every random draw happens at generation, so resolution is pure
+
+**Date:** 2026-08-27 (Day 3)
+**Status:** accepted
+
+### Context
+
+Resolution asks "did a rail switch clear this block?" and "did the customer answer
+the message?". The obvious implementation draws for those at resolution time.
+
+### Decision
+
+No RNG anywhere in `sim/outcomes.py`. Every draw an intervention depends on —
+`route_would_succeed`, `message_response_lag_seconds`,
+`voice_response_lag_seconds` — is made at generation and stored on the event.
+Resolution is a pure function of `(latents, action, delay, window)`.
+
+### Why
+
+PRD §8.2's whole design is that the simulator's known counterfactual verifies the
+estimator is unbiased. That requires **both** potential outcomes for every event —
+what it does under arm A *and* under arm B — which requires resolving the same
+event twice and getting a well-defined answer each time.
+
+An oracle that rolled dice at resolution time would give the *truth* side its own
+Monte-Carlo error. The comparison would become "a noisy estimate against a noisy
+truth", and the unbiasedness test would degrade from a proof into a smell test.
+
+It also makes the oracle trivially testable and the whole resolver deterministic,
+which invariant I8 requires anyway.
+
+### Consequences
+
+- `resolve_one` takes `arm` as a parameter rather than reading `event.arm`, so the
+  same function produces both potential outcomes. The live path always passes
+  `event.arm`; only `potential_outcomes` passes anything else.
+- `potential_outcomes` computes the answer key. Nothing on the agent path may call
+  it, nothing writes its output to the ledger, and its only caller is the test.
+- The oracle is injectable, which is the seam that makes this productionisable:
+  in production the outcome arrives from a `payment.captured` webhook.
+  `tests/test_resolve.py` swaps it to demonstrate the boundary is real.
+
+---
+
+## ADR-026 — The observation window is a measurement; T_settle is a policy. They are named apart
+
+**Date:** 2026-08-27 (Day 3)
+**Status:** accepted
+
+### Context
+
+PRD §5.1 and §8.1 both say "settle window", and they mean different things. §5.1
+means how long the policy waits before acting, so it does not pay to message
+someone mid-retry. §8.1 means how long after detection a recovery still counts.
+
+### Decision
+
+Two names, two constants, two modules' worth of separation:
+
+- `OBSERVATION_WINDOW_SECONDS = 72h` — a **measurement** choice, a parameter of
+  `resolve_batch`, identical across every arm.
+- `SETTLE_DELAY_SECONDS[reason_class]` — a **policy** choice, part of what an arm
+  does, and one of the things arm C could plausibly beat arm B on.
+
+### Why
+
+Conflating them is how a measurement window quietly becomes a treatment. If the
+window were a property of an arm, arm A could be censored differently from arm B
+and B−A would pick up a difference that has nothing to do with recovery. Keeping
+the window out of the arm makes that mistake structurally unavailable.
+
+72h is not free either: it must exceed the 24h scheduled-retry delay, or the
+measurement censors the treatment before it fires and reports "scheduled retries
+do not work" when what happened is that nobody waited for one. Asserted at import,
+because the two constants live in different modules and could drift.
+
+And because the trade-off is genuine in both directions — short windows censor
+the treatment, long ones let organic recovery swallow the effect — PRD §5.1 asks
+for a curve rather than a defended constant. `make demo` prints one.
+
+---
+
+## ADR-027 — An unwired arm reports no number, and the refusal is enforced
+
+**Date:** 2026-08-27 (Day 3)
+**Status:** accepted
+
+### Context
+
+Arm C exists from Day 3 and does nothing until Day 5. It holds 1,996 of 6,000
+events. Those events have outcomes.
+
+### Decision
+
+`ArmPolicy.wired` is False for arm C, and `metrics.contrast` **raises** if asked
+for any contrast involving it. The demo prints arm C's `n` and a dash for every
+figure.
+
+### Why
+
+An unwired arm takes no action, so its outcomes are identical to arm A's by
+construction. A table printing `C: 29.7%` next to `B: 30.2%` would read as *the
+LLM is no better than the table* — which is not a finding, it is an artefact of
+the LLM not existing yet. And it is the exact finding Day 5 exists to establish or
+refute, so publishing it early with the wrong cause attached would be worse than
+publishing nothing.
+
+Enforced rather than documented, because a comment saying "do not print arm C" is
+one refactor away from being ignored.
+
+### Consequences
+
+- Building the slot on Day 3 costs ten minutes; retrofitting a third arm on Day 5
+  would mean re-running and re-reporting everything.
+- More importantly it fixes arm C's measurement **before** arm B's result is
+  known, which is what stops the Day 5 comparison being designed around a number
+  already in hand.
+- `arms._self_check` asserts exactly one arm acts today and names it. If arm C is
+  wired without that check moving in the same commit, the import fails — an arm
+  that starts acting is a decision somebody should have made explicitly.
+
+---
+
+## ADR-028 — Interval widths are normalised by the control-arm level, not by the point estimate
+
+**Date:** 2026-08-27 (Day 3)
+**Status:** accepted, after the first version was wrong
+
+### Context
+
+The Day 3 definition of done requires the money confidence interval to be visibly
+wider than the rate interval. Heavy tails guarantee it, so if it is not, the
+bootstrap is wrong. The two statistics are in different units, so something has to
+normalise them.
+
+### Decision
+
+Divide each interval's width by the **control arm's own level** for that metric —
+arm A's recovery rate, arm A's rupees-per-event.
+
+### Why
+
+The first version divided each width by its own point estimate, and reported "the
+money interval is narrower" on the full batch. Not because the bootstrap was
+broken, but because the incremental rate is +0.58pp: a near-zero denominator makes
+any relative width explode.
+
+The error is conceptual. The quantity being compared is how precisely each
+statistic can be **estimated**. Dividing by a noisy near-zero estimate measures
+the estimate rather than the precision — and it fails exactly when the effect is
+small, which is the case the project actually reports. Arm A's levels are stably
+estimated and each sets the natural scale for its own metric.
+
+### Consequences
+
+- Full batch: rate 0.192, money 1.113. The money interval is 5.8× relatively
+  wider, which is the expected direction and magnitude.
+- A second, independent heavy-tail signature is printed alongside: interval
+  **asymmetry**, upper half-width over lower. A normal approximation is symmetric
+  by construction, so an asymmetry away from 1.0 is direct visible evidence the
+  interval was read off the resample distribution rather than computed from a
+  standard error. 1.23 on the full batch.
+- Recorded in FAILURES.md as severity 4: the check prints its verdict on screen,
+  so it would have shipped a run announcing its own bootstrap was broken.
+
+---
+
+## ADR-029 — A sensitivity table prints the estimand and the estimate, not one of them
+
+**Date:** 2026-08-27 (Day 3)
+**Status:** accepted, after the first version was uninformative
+
+### Context
+
+BUILD-PLAN Day 3 requires the organic-recovery sweep in the **standard output**,
+specifically so that "your simulator is made up" becomes a question already
+answered on screen.
+
+### Decision
+
+Print two columns per scenario: the **exact effect** from both potential outcomes,
+and the **arm-based estimate with its confidence interval**.
+
+### Why
+
+The first version printed only the estimate, and the four rows came out
+non-monotone: +1.96 / +0.53 / +2.15 / +0.92. It looked like a bug and proved
+nothing. Each row carries its own sampling noise, and at 2,000 events per arm each
+interval spans about 5pp — wider than the entire range the underlying quantity
+moves across. The table was showing noise where it was meant to show a trend.
+
+The estimand was clean all along: +3.25 → +3.08 → +2.85 → +2.33pp. That is the
+answer to the question the sweep asks — *how much does this assumption matter* —
+and it has no sampling error because both potential outcomes are known.
+
+But printing only the estimand would overstate what the experiment can resolve. So
+both, labelled: the estimand answers "how much does the assumption matter", the
+estimate answers "could production tell these scenarios apart", and the honest
+answer to the second is no.
+
+### Consequences
+
+The distinction between an **estimand** and an **estimate** turned out to be the
+difference between a table that argues something and a table that looks broken.
+The same split is now used in the demo's estimator-validation section, where the
+true ATE (+3.02pp) is printed next to the estimate (+0.58pp [−2.27, +3.43]) with
+"covered" against each — which is the whole of PRD §8.2 on one screen.
+

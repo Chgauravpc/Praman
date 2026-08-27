@@ -44,6 +44,61 @@ either direction. If `C − B ≈ 0`, the honest finding is that a lookup table
 matches the LLM for choosing the *action*, and the LLM's value lies in diagnosis
 and conversation instead.
 
+### The number, as of Day 3
+
+Arms A and B are measured. Arm C is present, holds its third of the events, and
+is wired on Day 5 — its figures are **withheld** rather than printed, because an
+arm that takes no action has arm A's outcomes and printing them would read as a
+finding about the LLM.
+
+> **Intent-to-treat, all 6,000 events: +0.58 pp of at-risk events, 95% CI
+> [−2.27, +3.43].** The interval spans zero.
+>
+> **On the 25.6% of events the rules-only policy actually acts on: +9.22 pp, 95%
+> CI [+4.96, +13.46].** The interval excludes zero.
+
+Both are printed by `make demo-full`, the second labelled a pre-specified
+subgroup. **The gap between them is the finding**, and its cause is measured
+rather than guessed: the rules-only table answers 72.1% of volume with
+`ACT_WAIT`, where the true effect is *exactly zero* — verified per event, not
+asserted. So a real +3.02 pp effect is being measured through a sample in which
+three-quarters of the observations are known-null.
+
+That is unflattering to the lookup table, and it is exactly the headroom `C − B`
+is measured against on Day 5 — stated now, before any LLM result exists to be
+flattered by it.
+
+Reported in three units, because two of them look the same and are not: **+0.58 pp
+of at-risk events** (event-weighted), **+5.99 pp of failed value**
+(value-weighted), **₹533.09 per at-risk event**. A percentage-point figure quoted
+without saying which is a defect.
+
+### The estimator is validated against ground truth, not just run
+
+In production the counterfactual is unobservable. In simulation it is known — so
+both potential outcomes are computable for every event and the true effect is an
+*exact* quantity rather than an estimate. `make demo` prints the comparison:
+
+| | true effect | estimate (95% CI) | |
+|---|---|---|---|
+| event-weighted | +3.02 pp | +0.58 pp [−2.27, +3.43] | covered |
+| value-weighted | +6.73 pp | +5.99 pp [−7.82, +19.69] | covered |
+| ₹ per at-risk event | ₹483.97 | ₹533.09 [−₹776.29, +₹2,148.75] | covered |
+
+`tests/test_estimator_unbiased.py` goes further: the estimator is unbiased over 60
+independent batches, its intervals cover at the nominal rate, and — the one that
+matters most — **stripping the counterfactual from the outcomes changes no
+estimate**, so the agreement above is not circular.
+
+Intervals are **BCa bootstrap, 10,000 resamples**, never a normal approximation:
+order amounts are log-normal, and the demo prints two heavy-tail signatures to
+show the interval was read off the resample distribution rather than a standard
+error — the money interval is 5.8× relatively wider than the rate interval, and
+it is visibly asymmetric (1.23 upper/lower) where a normal interval is 1.00 by
+construction.
+
+Full method, calibration and threats to validity: **[EVALUATION.md](EVALUATION.md)**.
+
 Arm assignment happens at detection, before the settle window, stratified on
 (event type × amount band × segment) — because order amounts are log-normal and
 a handful of large payments would otherwise stack into one arm by luck.
@@ -68,9 +123,13 @@ human ops lead does not re-think policy for every ticket either.
 
 ## Build status
 
-Day 2 of 8. **The spine and the compliance gate are complete; the intelligence is
-not.** This section is accurate rather than aspirational, and is updated as days
-land.
+Day 3 of 8. **The spine, the compliance gate and the measurement layer are
+complete; the intelligence is not.** This section is accurate rather than
+aspirational, and is updated as days land.
+
+**Zero LLM calls and zero tokens so far.** That ordering is deliberate: the
+headline number cannot be blocked by a rate limit, and what Day 3 built is arm B —
+the baseline the LLM has to beat from Day 5.
 
 **Working:**
 
@@ -151,7 +210,7 @@ itself; it is not a measure of how many *ways* each rule can be violated.
 ```bash
 make demo        # 200-event dev batch, keyless, no network call
 make demo-full   # 6,000-event batch (sized from a power calculation)
-make test        # 232 tests, including the invariants below
+make test        # 329 tests, including the invariants below
 make verify      # tests, plus a byte-identical-output check across two runs
 ```
 
@@ -159,6 +218,24 @@ make verify      # tests, plus a byte-identical-output check across two runs
 the rule each one cited, the ledger head hash, a live tamper demonstration, the
 reason distribution against its published ranges, the amount bands, the arm
 balance, the organic self-recovery rate, and the memoisation ratio.
+
+From Day 3 it also prints, in this order: the **power analysis first** (so the
+interval that follows is read against what the sample could ever have resolved),
+the three arms, `B − A` with its confidence interval in three labelled units, the
+pre-specified actioned subgroup, a per-class attribution table marking the classes
+where the true effect is *exactly zero*, interval diagnostics including a
+cross-check against the closed-form Wald interval, gross-versus-incremental, costs
+and the false-intervention rate, refusals broken down by rule, an
+**organic-recovery sensitivity sweep** at 15/30/50/70%, an **observation-window
+curve**, and the estimator validated against ground truth.
+
+Two of those are worth calling out because most submissions will not have them.
+The sensitivity sweep prints the *estimand* and the *estimate* side by side —
++3.25 → +2.33 pp as organic recovery goes 15% → 70%, next to intervals showing
+that a holdout of this size cannot tell those scenarios apart. And the refusal
+table is **empty by design**: arm B never proposes what the envelope refuses,
+which is what makes it a fair baseline, so the per-rule table prints the verdicts
+that *did* fire instead. A refusal count on compliant input measures the input.
 
 ## The invariants
 
@@ -170,6 +247,8 @@ These are properties, each with a test, and they hold at every commit.
 | **I2** | Two different events sharing a signature produce **byte-identical prompt bytes** | `tests/test_prompt_canonical.py` |
 | **I3** | The envelope returns a verdict **and a rule id** for every action × context | `tests/test_envelope_matrix.py` |
 | **I4** | Every rule R1–R11 catches its engineered violation | `tests/test_redteam_envelope.py` |
+| **I5** | The observation window is applied identically to every arm, and an arm whose action is inert produces the control's outcome unchanged — verified per event | `tests/test_resolve.py` |
+| **I6** | The holdout estimator recovers the simulator's known true effect, is unbiased over 60 batches, and **never reads the counterfactual** | `tests/test_estimator_unbiased.py` |
 | **I7** | The hash chain detects any row mutation or reordering. **Truncation of the tail needs the row-count or head anchor** — a shortened chain is internally perfect, so re-hashing cannot see it | `tests/test_ledger_chain.py` |
 | **I8** | Same seed and same cache → byte-identical output | `make verify` |
 | **I9** | `make demo` completes with every API key unset | `make demo` |

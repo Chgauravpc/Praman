@@ -23,6 +23,10 @@ from typing import List, Sequence
 from pramaan import canonical, taxonomy
 from pramaan.config import BUILD_DIR, ROOT, SIM_EPOCH, load_config
 from pramaan.envelope import EnvelopeContext, Step, judge
+from pramaan.eval import arms as eval_arms
+from pramaan.eval import bootstrap as bs
+from pramaan.eval import metrics as eval_metrics
+from pramaan.eval import resolve as eval_resolve
 from pramaan.ledger.chain import Ledger
 from pramaan.llm.client import LLMClient
 from pramaan.sense.models import RiskEvent
@@ -93,40 +97,14 @@ def _section(title: str) -> None:
 # a *number* -- "of 200 events the envelope refused N, naming these rules" is the
 # sentence the Day 5 shadow-mode report is built out of.
 
-#: What the gate assumes about the *sending infrastructure*, as distinct from the
-#: event. A DLT template, a scripted AI disclosure and a scripted
-#: self-identification are properties of a correctly-built sender (Days 5 and 7),
-#: not properties of a failed payment -- so assuming them is what makes this pass
-#: measure the envelope's judgement about timing, taxonomy and tiers, rather than
-#: measuring the fact that Day 2 has no channel plumbing yet.
-#:
-#: A named constant, and printed in the output, because an assumption that moves
-#: a headline count belongs on screen rather than in a comment.
-SHADOW_SENDER_ASSUMPTIONS = dict(
-    consent="implied",
-    dlt_template_id="1207shadow",
-    ai_disclosure_scripted=True,
-    self_identification_scripted=True,
-)
-
-
-def envelope_context(event: RiskEvent) -> EnvelopeContext:
-    """Build the envelope's input from an event. Event time only, no clock."""
-    return EnvelopeContext(
-        at=event.detected_at,
-        legal_context=event.legal_context,
-        source_type=event.source_type,
-        reason_code=event.cause_signal,
-        amount_paise=event.amount_at_risk_paise,
-        counterparty_id=event.counterparty.id,
-        merchant_id="acct_shadow",
-        **SHADOW_SENDER_ASSUMPTIONS
-    )
-
-
-#: Which channel each action would use. The envelope judges (action, channel), so
-#: a pass that sent "none" for everything would never exercise the window at all.
-DEFAULT_CHANNEL = {"ACT_MESSAGE": "sms", "ACT_VOICE": "voice"}
+# Both of these moved to pramaan/eval/resolve.py and pramaan/eval/arms.py on
+# Day 3, with their values unchanged, because the outcome resolver needs the same
+# envelope input this gate pass does. Re-exported rather than re-declared: two
+# copies of an assumption that moves a headline count is how the two stop
+# agreeing, and the golden ledger would not necessarily catch it.
+SHADOW_SENDER_ASSUMPTIONS = eval_resolve.SHADOW_SENDER_ASSUMPTIONS
+envelope_context = eval_resolve.envelope_context
+DEFAULT_CHANNEL = eval_arms.DEFAULT_CHANNEL
 
 
 def gate_events(events: Sequence[RiskEvent], ledger: Ledger) -> dict:
@@ -178,13 +156,16 @@ def run_demo(batch: str, seed: int, out_dir: Path) -> int:
     store = EventStore(conn)
     ledger = Ledger(conn)
 
-    print("Pramaan -- revenue recovery, Day 2: spine + envelope")
-    print("=" * 53)
+    title = "Pramaan -- revenue recovery, Day 3: the incremental number"
+    print(title)
+    print("=" * len(title))
     print("  batch                %s (%d events)" % (batch, len(events)))
     print("  seed                 %d" % seed)
     print("  sim epoch            %s" % SIM_EPOCH)
     print("  mode                 %s" % config.mode)
-    print("  llm                  offline (Days 1-2 make zero LLM calls, by design)")
+    print("  llm                  offline (Days 1-3 make zero LLM calls, by design)")
+    print("  observation window   %dh, applied identically to every arm"
+          % (eval_resolve.OBSERVATION_WINDOW_SECONDS // 3600))
 
     # -- ingest, then replay to prove idempotency -------------------------
     _section("SENSE -- ingest")
@@ -270,16 +251,36 @@ def run_demo(batch: str, seed: int, out_dir: Path) -> int:
     print("  rule. P = house policy. Nothing here cites a regulator for a rule we")
     print("  wrote ourselves; see pramaan/envelope/context.py.")
 
+    # -- outcomes ----------------------------------------------------------
+    #
+    # Resolved here, before the ledger section, because resolution *writes* to
+    # the ledger: one OUTCOME row per event, plus an EXCEPTION row wherever an arm
+    # wanted to act and could not. Doing it after would print row counts and a
+    # head hash that were already stale, verify a chain shorter than the one on
+    # disk, and export a golden file missing the rows the day added -- all of
+    # which the first draft did.
+    #
+    # The analysis is printed further down; only the writing happens here.
+    outcomes = eval_resolve.resolve_batch(events, ledger=ledger)
+
     # -- ledger ------------------------------------------------------------
     _section("LEDGER -- hash chain")
     for kind, count in ledger.kind_counts():
         print("  %-20s %d rows" % (kind, count))
-    # Anchored on the batch size: the demo knows how many events it ingested, so
-    # it can catch a truncated tail, which an unanchored verify cannot see.
-    # DETECT per event, then GATE per event. Anchored on both counts: a hash
-    # chain alone cannot see a truncated tail, because deleting the last n rows
-    # leaves every surviving row and link correct.
-    verification = ledger.verify_chain(expected_rows=2 * len(events))
+    # Anchored on the batch size: the demo knows how many rows it should have
+    # written, so it can catch a truncated tail, which an unanchored verify
+    # cannot see -- deleting the last n rows leaves every surviving row and link
+    # correct.
+    #
+    # Three rows per event as of Day 3 (DETECT, GATE, OUTCOME), plus one
+    # EXCEPTION per event where an arm wanted to act and could not. The exception
+    # count is *counted*, not assumed: it depends on how many events wanted a
+    # channel that was shut at their hour, and hard-coding a figure here would be
+    # the kind of inherited constant this project keeps catching itself on.
+    expected_exceptions = sum(1 for o in outcomes if o.exception is not None)
+    verification = ledger.verify_chain(
+        expected_rows=3 * len(events) + expected_exceptions
+    )
     print("  head hash            %s" % ledger.head_hash())
     print(
         "  verify_chain         %s  (%d rows checked)"
@@ -296,6 +297,9 @@ def run_demo(batch: str, seed: int, out_dir: Path) -> int:
 
     ledger.export_jsonl(ledger_path)
     print("  exported             %s" % _display_path(ledger_path))
+
+    # -- recovery: the Day 3 headline --------------------------------------
+    metrics = _print_recovery(events, outcomes, seed, batch)
 
     # -- distribution ------------------------------------------------------
     _section("DISTRIBUTION -- reason buckets (PRD 5.1)")
@@ -405,12 +409,12 @@ def run_demo(batch: str, seed: int, out_dir: Path) -> int:
     print("   depend on a rate limit.)")
 
     store.record_run(
-        run_id="day2-%s-seed%d" % (batch, seed),
+        run_id="day3-%s-seed%d" % (batch, seed),
         seed=seed,
         batch=batch,
         event_count=len(events),
         sim_epoch=SIM_EPOCH,
-        notes="day 2: sense + ledger + deterministic envelope, no LLM",
+        notes="day 3: three arms, outcome resolution, bootstrap CI, no LLM",
     )
     conn.commit()
 
@@ -433,6 +437,43 @@ def run_demo(batch: str, seed: int, out_dir: Path) -> int:
         ("every gated action names a rule (I3)", sum(tally["verdicts"].values()) == len(events)
             and all(rule for _, rule in tally["rules"])),
         ("arms within 5% of equal thirds", _arms_balanced(store)),
+        # -- Day 3, the gate ---------------------------------------------
+        (
+            "three arms exist, and arm C is present and empty",
+            _arm_c_is_present_and_empty(metrics),
+        ),
+        (
+            "every stratum is balanced to within one event",
+            eval_arms.stratum_imbalance(events) <= 1,
+        ),
+        (
+            "B-A prints as an incremental rate with a CI",
+            metrics.headline.intervals["rate"].method in ("BCa", "percentile"),
+        ),
+        (
+            "both an event-weighted and a value-weighted figure printed",
+            "rate" in metrics.headline.intervals
+            and "value_share" in metrics.headline.intervals,
+        ),
+        # The heavy-tail check. Not a convention -- if the money interval is not
+        # relatively wider than the rate interval on log-normal amounts, the
+        # bootstrap is wrong.
+        (
+            "the money CI is wider than the rate CI (heavy tails)",
+            metrics.headline.money_interval_is_wider,
+        ),
+        (
+            "BCa agrees with the closed-form Wald interval on the rate",
+            metrics.headline.bootstrap_agrees_with_normal,
+        ),
+        (
+            "no OUTCOME row carries latent ground truth",
+            _no_latent_in_ledger(conn),
+        ),
+        (
+            "inert-action classes resolve identically in A and B (per event)",
+            eval_metrics.inert_classes_are_identical(events),
+        ),
     ]
     for label, passed in checks:
         print("  [%s] %s" % ("x" if passed else " ", label))
@@ -441,6 +482,567 @@ def run_demo(batch: str, seed: int, out_dir: Path) -> int:
     print("  %s" % ("ALL CHECKS PASS" if ok else "SOME CHECKS FAILED"))
     conn.close()
     return 0 if ok else 1
+
+
+# --------------------------------------------------------------------------
+# Day 3 -- the number
+# --------------------------------------------------------------------------
+
+
+def _pp(interval, scale=100.0, unit="pp"):
+    """A point estimate and its interval, in percentage points."""
+    return "%+6.2f %s  [%+6.2f, %+6.2f]" % (
+        interval.point * scale,
+        unit,
+        interval.low * scale,
+        interval.high * scale,
+    )
+
+
+def _money(interval):
+    """The same, in rupees. Paise in, rupees out, sign preserved."""
+    return "%s  [%s, %s]" % (
+        _rupees(int(round(interval.point))),
+        _rupees(int(round(interval.low))),
+        _rupees(int(round(interval.high))),
+    )
+
+
+def _hours(seconds: int) -> str:
+    if seconds % 86400 == 0 and seconds >= 86400:
+        return "%dd" % (seconds // 86400)
+    return "%dh" % (seconds // 3600)
+
+
+def _arm_c_is_present_and_empty(metrics) -> bool:
+    """Arm C exists, is populated with events, and reports no result.
+
+    All three clauses matter. An arm C that did not exist would have to be
+    retrofitted on Day 5; an arm C with no events assigned would not be a third
+    of anything; and an arm C reporting a number would be reporting arm A's
+    outcomes under the LLM's name.
+    """
+    summary = metrics.summaries.get("C")
+    return (
+        "C" in metrics.unwired_arms
+        and summary is not None
+        and summary.n > 0
+        and summary.actions_taken == 0
+    )
+
+
+def _no_latent_in_ledger(conn) -> bool:
+    """No ledger payload may contain a latent field name.
+
+    Checked over the rows rather than over the writer. ``_write_rows`` is careful
+    today, and a check that reads the code it is checking proves nothing -- this
+    reads what was actually stored. The forbidden names are the LatentTruth field
+    names, because those are the answer key: an OUTCOME row carrying
+    ``would_recover_unaided`` would put the counterfactual into the artifact a
+    reviewer is invited to audit and into a table the Day 4 investigator's SQL
+    tool can reach.
+    """
+    forbidden = (
+        "would_recover_unaided",
+        "self_recovers_at",
+        "capability_clears_at",
+        "has_intent",
+        "route_would_succeed",
+    )
+    for (payload,) in conn.execute("SELECT payload FROM ledger"):
+        for name in forbidden:
+            if name in payload:
+                return False
+    return True
+
+
+def _print_recovery(events, outcomes, seed: int, batch: str):
+    """Print the headline. Block C/C2/D of Day 3.
+
+    Takes already-resolved outcomes rather than resolving its own. Resolution
+    writes ledger rows, and a printer that wrote to the ledger would have to run
+    before the ledger section -- which is how the first draft came to print row
+    counts that were stale by the time the run finished.
+    """
+    # 10,000 for the headline contrasts on every batch, per PRD 8.1. An earlier
+    # draft had this backwards -- 10,000 on the dev smoke test and 2,000 on the
+    # 6,000-event batch that actually produces the published figure -- which is
+    # exactly the wrong way round: the batch whose number gets quoted is the one
+    # that needs the resample count the PRD specifies. The reduced count is used
+    # only for the two sweeps, where the point is the direction of movement across
+    # rows rather than a third significant figure, and it is labelled on screen.
+    resamples = bs.DEFAULT_RESAMPLES
+    metrics = eval_metrics.compute_metrics(
+        outcomes, seed=seed, resamples=resamples
+    )
+
+    # The *smallest* arm, not len(events)//3. Permuted blocks leave the arms
+    # within one event of each other but not exactly equal (68/67/65 on the dev
+    # batch), and power is set by the binding constraint rather than the average.
+    arm_counts = eval_arms.arm_counts(events)
+    per_arm = min(arm_counts[a] for a in eval_arms.WIRED_ARMS)
+
+    # ---- power, first, so the batch size is justified before any result ----
+    _section("POWER -- what this batch can and cannot detect (PRD 8.1)")
+    print("  Printed before the result, not after, because the honest reading of")
+    print("  an interval depends on what the sample could ever have resolved.")
+    print()
+    print("  %-16s %10s %10s" % ("detectable lift", "per arm", "3 arms"))
+    for lift, per, total in eval_arms.power_table():
+        marker = "  <- this batch clears it" if per_arm >= per else ""
+        print("  %-16s %10d %10d%s" % ("%.0f pp" % (lift * 100), per, total, marker))
+    mde = eval_arms.min_detectable_effect(per_arm)
+    print()
+    print("  events per arm       %d" % per_arm)
+    print("  minimum detectable   %.1f pp at alpha=0.05, 80%% power, p-bar=%.2f"
+          % (mde * 100, eval_arms.POWER_BASELINE_RATE))
+    print("  (event-weighted -- a proportion of events. PRD 10.2 is explicit that")
+    print("   this is a different quantity from a share of rupees.)")
+    if batch == "dev":
+        print()
+        print("  So the 200-event dev batch CANNOT resolve any effect a recovery")
+        print("  system would plausibly produce. Its interval below is real and it")
+        print("  will span zero, and that is a fact about 67 events per arm rather")
+        print("  than about the interventions. `make demo-full` is the governing")
+        print("  figure; this batch exists to exercise the apparatus.")
+
+    # ---- arms -----------------------------------------------------------
+    _section("RECOVERY -- three arms, %s observation window" % _hours(metrics.window_seconds))
+    print("  The window is applied identically to every arm. Recoveries landing")
+    print("  after it are counted as non-recoveries everywhere, so the censoring")
+    print("  cancels in B-A and shows up only in the absolute levels.")
+    print()
+    print("  %-4s %6s %8s %8s %10s  %s" % (
+        "arm", "n", "recov", "rate", "Rs/event", "policy"))
+    for arm in canonical.ARMS:
+        summary = metrics.summaries[arm]
+        policy = eval_arms.ARM_POLICIES[arm]
+        if not policy.wired:
+            print("  %-4s %6d %8s %8s %10s  %s" % (
+                arm, summary.n, "--", "--", "--", policy.label))
+            continue
+        print("  %-4s %6d %8d %7.1f%% %10s  %s" % (
+            arm,
+            summary.n,
+            summary.recovered,
+            summary.rate * 100,
+            _rupees(int(summary.money_per_event_paise)),
+            policy.label,
+        ))
+    print()
+    print("  Arm C is present, holds its third of the events, and takes no")
+    print("  action -- so its outcomes would be identical to arm A's. Its figures")
+    print("  are withheld rather than printed as zeros, because a table showing")
+    print("  'C: same as A' reads as a finding about the LLM and there is no LLM")
+    print("  yet. It is wired on Day 5; the slot exists now so that nothing has")
+    print("  to be re-run then.")
+
+    # ---- the headline ---------------------------------------------------
+    headline = metrics.headline
+    rate_iv = headline.intervals["rate"]
+    value_iv = headline.intervals["value_share"]
+    money_iv = headline.intervals["money_per_event"]
+
+    _section("B - A -- the incremental figure (PRD 8.1)")
+    print("  Intent-to-treat over every event, including the ones the policy")
+    print("  declines to act on. %s, %d resamples, 95%%.\n" % (
+        rate_iv.method, rate_iv.resamples))
+    print("  %-38s %s" % (
+        "EVENT-weighted, of at-risk events", _pp(rate_iv)))
+    print("  %-38s %s" % (
+        "VALUE-weighted, of failed value", _pp(value_iv)))
+    print("  %-38s %s" % (
+        "Rs per at-risk event", _money(money_iv)))
+    print()
+    print("  These are three different quantities and none of them is a rounding")
+    print("  of another (PRD 10.2). Quoting a pp figure without saying which of")
+    print("  the first two it is would be a defect, so both are labelled.")
+    print()
+    if not rate_iv.excludes_zero:
+        print("  The event-weighted interval SPANS ZERO. On this batch the")
+        print("  intent-to-treat effect is not distinguishable from no effect.")
+        print("  That is the pre-registered honest reading (PRD 8.1's kill")
+        print("  condition), and the power block above says why: the effect is")
+        print("  smaller than what %d events per arm can resolve." % per_arm)
+    else:
+        print("  The event-weighted interval EXCLUDES ZERO.")
+
+    # ---- the subgroup ---------------------------------------------------
+    actioned = metrics.contrasts["B-A actioned"]
+    a_rate = actioned.intervals["rate"]
+    a_money = actioned.intervals["money_per_event"]
+    print()
+    print("  Pre-specified subgroup -- events the policy actually acts on")
+    print("  " + "-" * 58)
+    print("  Arm B answers TECH_TRANSIENT and AUTH_DROPOFF with ACT_WAIT, and")
+    print("  those are most of the volume, so for those events arm B is")
+    print("  IDENTICAL TO ARM A by construction: zero signal, full variance.")
+    print("  The subset below is defined by cause_signal alone -- pre-treatment,")
+    print("  known at detection, identical in both arms -- so conditioning on it")
+    print("  is legitimate. It is a subgroup, not the headline.")
+    print()
+    print("  %-34s %d of %d (%.1f%%)" % (
+        "events the policy acts on",
+        actioned.n_control + actioned.n_treatment,
+        headline.n_control + headline.n_treatment,
+        (actioned.n_control + actioned.n_treatment)
+        / max(1, headline.n_control + headline.n_treatment) * 100,
+    ))
+    print("  %-34s %s" % ("incremental recovery, EVENT-weighted", _pp(a_rate)))
+    print("  %-34s %s" % ("incremental Rs per at-risk event", _money(a_money)))
+    print("  %-34s %s" % (
+        "interval excludes zero",
+        "YES" if a_rate.excludes_zero else "no",
+    ))
+
+    # ---- where the effect comes from ------------------------------------
+    print()
+    print("  Where the effect comes from, and where it does not")
+    print("  " + "-" * 58)
+    print("  %-18s %6s %7s %8s %8s %9s  %-20s %s" % (
+        "class", "n", "share", "A rate", "B rate", "contrib", "arm B action", ""))
+    for row in metrics.contributions:
+        print("  %-18s %6d %6.1f%% %7.1f%% %7.1f%% %+8.2fpp  %-20s %s" % (
+            row.reason_class,
+            row.n_control + row.n_treatment,
+            row.share_of_events * 100,
+            row.control_rate * 100,
+            row.treatment_rate * 100,
+            row.contribution * 100,
+            row.default_action,
+            "no-op: true effect is 0" if row.inert else "",
+        ))
+    print()
+    print("  Rows marked no-op have a TRUE effect of exactly zero: arm B's action")
+    print("  for them does nothing to the payment path, so the resolver returns")
+    print("  arm A's outcome unchanged. Any number in their contrib column is")
+    print("  arm-assignment noise -- arm A and arm B hold different events, not")
+    print("  the same events treated differently. Which makes those rows useful")
+    print("  twice over: they are also a direct read-out of the noise floor at")
+    print("  this sample size. Verified per-event, not asserted: see the")
+    print("  'inert-action classes resolve identically' check in RESULT.")
+    print()
+    print("  The zero rows are the finding, not a bug. A lookup table's ceiling")
+    print("  is set by how much of the volume it is willing to touch, and this")
+    print("  one declines to touch the two largest classes. That is precisely the")
+    print("  headroom C - B is measured against on Day 5 -- stated now, before")
+    print("  any LLM result exists to be flattered by it.")
+
+    # ---- interval diagnostics -------------------------------------------
+    rate_rel, money_rel = headline.relative_widths
+    _section("INTERVAL DIAGNOSTICS -- is the bootstrap trustworthy")
+    print("  %-38s %s" % ("method", rate_iv.method))
+    print("  %-38s %d" % ("resamples", rate_iv.resamples))
+    print("  %-38s %s" % ("BCa rate CI", _pp(rate_iv)))
+    print("  %-38s %s" % (
+        "closed-form Wald rate CI", _pp(headline.rate_normal)))
+    print("  %-38s %s" % (
+        "the two agree to within 25% of width",
+        "YES" if headline.bootstrap_agrees_with_normal else "NO -- investigate",
+    ))
+    print("  (PRD 8.1: a normal CI is adequate for a *proportion*. So the rate is")
+    print("   the one statistic with a known closed form, which makes it the one")
+    print("   place the bootstrap can be checked rather than trusted.)")
+    print()
+    print("  %-38s %.3f" % ("rate CI width / arm A rate", rate_rel))
+    print("  %-38s %.3f" % ("money CI width / arm A Rs-per-event", money_rel))
+    print("  %-38s %s" % (
+        "money CI relatively wider",
+        "YES" if headline.money_interval_is_wider else "NO -- BOOTSTRAP IS WRONG",
+    ))
+    print("  %-38s %.2f  (1.00 = symmetric)" % (
+        "money CI asymmetry, upper/lower", headline.money_interval_asymmetry))
+    print("  Order amounts are log-normal, so the money interval must be")
+    print("  relatively wider AND visibly asymmetric. A normal approximation")
+    print("  cannot produce the second of those at all -- it is symmetric by")
+    print("  construction -- which is why PRD 8.1 forbids it here.")
+
+    # ---- gross vs incremental -------------------------------------------
+    b = metrics.summaries["B"]
+    a = metrics.summaries["A"]
+    _section("GROSS vs INCREMENTAL -- why gross is a category error (PRD 3)")
+    print("  %-38s %.1f%% of events / %.1f%% of value" % (
+        "arm B gross recovery", b.rate * 100, b.value_share * 100))
+    print("  %-38s %.1f%% of events / %.1f%% of value" % (
+        "arm A -- recovered with no action", a.rate * 100, a.value_share * 100))
+    print("  %-38s %s" % ("incremental, event-weighted", _pp(rate_iv)))
+    print("  %-38s %s" % ("incremental, value-weighted", _pp(value_iv)))
+    print()
+    print("  Razorpay's own webhook documentation warns that payment.failed is")
+    print("  frequently followed by payment.captured for the same transaction,")
+    print("  because customers correct a wrong UPI PIN and retry inside their own")
+    print("  banking app. Arm A is that population, measured. A headline of")
+    print("  '%.1f%% recovered' would be mostly other people's work." % (b.rate * 100))
+    print()
+    print("  Razorpay's published figure for automated retry systems is 15-20% of")
+    print("  failed transactions recovered [B] -- almost certainly gross. This")
+    print("  project's incremental band landing well below it is the model")
+    print("  working, not a weakness in it.")
+
+    # ---- cost -----------------------------------------------------------
+    _section("COST -- and the resource that is actually scarce (PRD 10.3)")
+    print("  %-38s %d" % ("actions taken (arm B)", b.actions_taken))
+    print("  %-38s %d" % ("customer contacts", b.contacts))
+    print("  %-38s %s" % ("total cost", _rupees(b.cost_paise)))
+    if b.cost_by_action:
+        for action, cost in sorted(
+            b.cost_by_action.items(), key=lambda kv: (-kv[1], kv[0])
+        ):
+            print("    %-36s %s (%d x)" % (
+                action, _rupees(cost), b.action_counts.get(action, 0)))
+    if b.recovered_paise:
+        print("  %-38s %.3f paise" % (
+            "cost per rupee recovered, GROSS",
+            b.cost_paise / (b.recovered_paise / 100.0)))
+    incremental_paise = money_iv.point * b.n
+    if incremental_paise > 0:
+        print("  %-38s %.3f paise" % (
+            "cost per rupee recovered, INCREMENTAL",
+            b.cost_paise / (incremental_paise / 100.0)))
+    else:
+        print("  %-38s n/a -- the incremental point estimate is" % (
+            "cost per rupee recovered, INCREMENTAL"))
+        print("  %-38s not positive on this batch, so the ratio" % "")
+        print("  %-38s would be meaningless rather than large." % "")
+    print("  (Gross flatters the ratio, because most of the denominator is money")
+    print("   that was coming back anyway. PRD 10.3 costs against incremental.)")
+    if b.contacts:
+        print("  %-38s %s" % (
+            "recovered per contact, contact-caused",
+            _rupees(int(b.paise_recovered_per_contact))))
+        print("   Numerator counts only value a contact actually brought in --")
+        print("   not the arm's whole recovery divided by its contact count,")
+        print("   which is a flattering nonsense the first draft printed.")
+    print("  %-38s %d of %d contacts (%.1f%%)" % (
+        "false interventions",
+        b.false_interventions,
+        b.contacts,
+        b.false_intervention_rate * 100,
+    ))
+    print("  (A contact spent on someone who was coming back anyway. Denominator")
+    print("   is contacts, not events -- over events the rate would fall just by")
+    print("   contacting fewer people, and doing nothing is already arm A. This is")
+    print("   the number T_settle exists to hold down, and it is only computable")
+    print("   because the simulator knows the counterfactual.)")
+    if b.externalities:
+        print()
+        print("  %-38s %d events, %s" % (
+            "merchant alerts / engineer pages",
+            b.externalities,
+            _rupees(b.externality_paise),
+        ))
+        print("  Counted as NON-recoveries. Telling a merchant their configuration")
+        print("  is broken fixes the next thousand payments, not this one, and")
+        print("  folding that into a recovery figure would be inventing revenue.")
+        print("  Under-claiming a real benefit is the right way round to be wrong.")
+
+    # ---- refusals -------------------------------------------------------
+    refusal = metrics.refusal_breakdown
+    _section("REFUSALS -- broken down by the rule that refused (PRD 8, 10.4)")
+    print("  %-38s %d" % ("actions proposed by arm B", refusal.total_actions_proposed))
+    print("  %-38s %d (%.1f%%)" % (
+        "refused by the envelope", refusal.refused, refusal.refusal_rate * 100))
+    if refusal.by_rule:
+        print()
+        print("  %-8s %8s %16s" % ("rule", "n", "value blocked"))
+        for rule, n in sorted(refusal.by_rule.items(), key=lambda kv: (-kv[1], kv[0])):
+            print("  %-8s %8d %16s" % (
+                rule, n, _rupees(refusal.by_rule_paise.get(rule, 0))))
+        print()
+        print("  This per-rule breakdown IS the guardrail price list of PRD 10.4:")
+        print("  each row is value that compliance made unreachable by contact.")
+    else:
+        print()
+        print("  Zero rule refusals, and that is the designed result rather than")
+        print("  an inert gate. Arm B is the deterministic reason-class map plus")
+        print("  that map's own retry_mode, and the map is built compliant -- it")
+        print("  answers MERCHANT_CONFIG with ACT_ALERT_MERCHANT and FUNDS with a")
+        print("  retry already deferred past the credit cycle. It never proposes")
+        print("  what the envelope refuses, which is what makes it a fair arm B")
+        print("  rather than a strawman.")
+        print()
+        print("  The evidence that the envelope is not inert is elsewhere and is")
+        print("  deliberately not this number: tests/test_redteam_envelope.py runs")
+        print("  one engineered violation per rule R1-R11 and every one is caught")
+        print("  and cited. A refusal count on compliant input measures the input.")
+    if refusal.verdicts_by_rule:
+        print()
+        print("  Every envelope verdict on an arm-B action, by the rule that")
+        print("  decided it -- the same per-rule shape as a refusal table, and")
+        print("  non-empty, so it still answers which rules govern this workload")
+        print("  and what value each one touches (PRD 10.4's price list).")
+        print()
+        print("  %-8s %-8s %8s %16s" % ("verdict", "rule", "n", "value governed"))
+        for (verdict, rule), n in sorted(
+            refusal.verdicts_by_rule.items(), key=lambda kv: (-kv[1], kv[0])
+        ):
+            print("  %-8s %-8s %8d %16s" % (
+                verdict,
+                rule,
+                n,
+                _rupees(refusal.verdicts_by_rule_paise.get((verdict, rule), 0)),
+            ))
+        print()
+        print("  Read the ALLOW rows as 'this rule had jurisdiction and permitted")
+        print("  it', not as 'nothing was checked'. A silent action has almost")
+        print("  nothing with jurisdiction over it, which is why the demo path")
+        print("  cites few rules and the 3,600-cell matrix test cites many.")
+    if refusal.amended_by_rule:
+        print()
+        print("  %-8s %8s   amended, not refused" % ("rule", "n"))
+        for rule, n in sorted(
+            refusal.amended_by_rule.items(), key=lambda kv: (-kv[1], kv[0])
+        ):
+            print("  %-8s %8d" % (rule, n))
+        print("  An amendment is a fixed action, not a blocked one, so it is")
+        print("  counted apart from the refusals above (ADR-016).")
+    if refusal.unavailable:
+        print()
+        print("  %-38s %d events, %s" % (
+            "no action available at all",
+            refusal.unavailable,
+            _rupees(refusal.unavailable_paise),
+        ))
+        print("  The policy wanted a channel that was not open at that hour. A")
+        print("  capability gap, not a compliance decision -- no rule ever saw")
+        print("  these, so counting them as refusals would inflate the apparent")
+        print("  cost of the rules.")
+
+    # ---- sensitivity to the organic-recovery assumption -----------------
+    _section("SENSITIVITY -- if organic self-recovery is not 30% (PRD 10.2)")
+    print("  The parameter that dominates the answer, and the most obvious attack")
+    print("  on the whole submission. So it is swept here, in the standard")
+    print("  output, rather than in an appendix.")
+    print()
+    print("  Each row is a FULL RE-SIMULATION at a rescaled self-recovery")
+    print("  probability, not a rescaling of the central row. That distinction is")
+    print("  the entire value of the table: under a per-action uplift model the")
+    print("  sweep would move the baseline and leave the uplift untouched, so")
+    print("  every row would print the same incremental figure and the table would")
+    print("  prove nothing. Here capability and intent are modelled separately")
+    print("  (sim/latent.py), so raising organic recovery genuinely eats the")
+    print("  headroom an intervention has to work in.")
+    print()
+    sens = eval_metrics.sensitivity_table(events, seed=seed)
+    print("  %-8s %9s %8s   %11s   %s" % (
+        "organic", "achieved", "A rate", "TRUE effect",
+        "what a holdout of this size would see"))
+    for row in sens:
+        marker = " <- central" if abs(
+            row.target_organic - eval_metrics.SENSITIVITY_CENTRAL) < 1e-9 else ""
+        print("  %-8s %8.1f%% %7.1f%%   %+8.2f pp   %s%s" % (
+            "%.0f%%" % (row.target_organic * 100),
+            row.achieved_organic * 100,
+            row.control_rate * 100,
+            row.true_rate * 100,
+            _pp(row.rate_interval),
+            marker,
+        ))
+    print()
+    widest = max(r.rate_interval.width for r in sens)
+    print("  TWO columns, and both are needed. The first draft printed only the")
+    print("  second and the table was useless: the widest estimate interval here")
+    print("  spans %.1f pp, which exceeds the entire range the quantity moves" % (
+        widest * 100))
+    print("  across, so the rows came out non-monotone and looked like a bug")
+    print("  rather than a sensitivity analysis.")
+    print()
+    print("  TRUE effect is the ESTIMAND -- exact, from both potential outcomes,")
+    print("  no sampling error. It answers 'how much does this assumption")
+    print("  matter', which is the question the sweep asks. It falls %.2fpp ->" % (
+        sens[0].true_rate * 100))
+    print("  %.2fpp as organic recovery goes 15%% -> 70%%: rising organic recovery" % (
+        sens[-1].true_rate * 100))
+    print("  eats the headroom an intervention has to work in, and it does so")
+    print("  NON-proportionally, which is the whole point -- under a per-action")
+    print("  uplift model every row would print an identical figure.")
+    print()
+    print("  The interval column is the ESTIMATE -- what a randomised holdout of")
+    print("  this size would have seen. It answers 'could production tell these")
+    print("  scenarios apart', and the honest answer is no. Printing only the")
+    print("  estimand would overstate what the experiment can resolve; printing")
+    print("  only the estimate hides the trend inside the noise.")
+    print()
+    print("  'achieved' is printed next to 'organic' because the two can differ:")
+    print("  ALREADY_PAID sits at probability 1.0 as a matter of definition and")
+    print("  the dead classes at 0.0, so no scale factor can move them. Printing")
+    print("  the achieved value is the difference between a sensitivity table and")
+    print("  a wish. Intervals use %d resamples, not %d." % (
+        bs.SENSITIVITY_RESAMPLES, bs.DEFAULT_RESAMPLES))
+    print()
+    print("  The 70% row is the one that matters: if most failed payments come")
+    print("  back on their own, most of what a recovery product reports was never")
+    print("  its own work. That row is the reason this project measures")
+    print("  incrementally at all.")
+
+    # ---- sensitivity to the observation window -------------------------
+    _section("OBSERVATION WINDOW -- the curve, not a picked constant (PRD 5.1)")
+    print("  A genuine trade-off in both directions: too short and the scheduled")
+    print("  retry fires after the window closes, too long and organic recovery")
+    print("  swallows the incremental effect. So it is published as a curve.")
+    print()
+    windows = eval_metrics.observation_window_sweep(events, seed=seed)
+    print("  %-8s %8s %8s   %-30s %s" % (
+        "window", "A rate", "B rate", "incremental (event-weighted)", "false-interv"))
+    for row in windows:
+        print("  %-8s %7.1f%% %7.1f%%   %-30s %6.1f%%%s" % (
+            _hours(row.window_seconds),
+            row.control_rate * 100,
+            row.treatment_rate * 100,
+            _pp(row.rate_interval),
+            row.false_intervention_rate * 100,
+            "  <- headline" if row.is_headline else "",
+        ))
+    print()
+    from pramaan.envelope.reason_map import MIN_SCHEDULED_RETRY_DELAY_SECONDS
+
+    print("  %dh is the headline window. It has to exceed the %dh scheduled" % (
+        metrics.window_seconds // 3600,
+        MIN_SCHEDULED_RETRY_DELAY_SECONDS // 3600))
+    print("  retry delay or the measurement would censor the treatment rather")
+    print("  than the outcome -- asserted at import in eval/resolve.py, not left")
+    print("  to a comment.")
+
+    # ---- estimator validation ------------------------------------------
+    _section("ESTIMATOR VALIDATION -- against ground truth (PRD 8.2)")
+    print("  SIMULATOR ONLY. None of this is available in production, and that")
+    print("  asymmetry is the point: the holdout estimates the effect the way")
+    print("  production would, and the simulator's known counterfactual then")
+    print("  checks that the estimator is UNBIASED rather than merely producing a")
+    print("  number. The figures below are the answer key, not the result.")
+    print()
+    pairs = eval_resolve.potential_outcomes(events)
+    truth = eval_resolve.true_effect(pairs)
+    print("  %-30s %s" % ("", "true ATE        estimate (95% CI)"))
+    for name, iv, scale in (
+        ("rate (event-weighted)", rate_iv, 100.0),
+        ("value_share (value-weighted)", value_iv, 100.0),
+    ):
+        covered = iv.low <= truth[name.split(" ")[0]] <= iv.high
+        print("  %-30s %+7.2f pp     %s   %s" % (
+            name,
+            truth[name.split(" ")[0]] * scale,
+            _pp(iv),
+            "covered" if covered else "NOT COVERED",
+        ))
+    money_covered = (
+        money_iv.low <= truth["money_per_event"] <= money_iv.high
+    )
+    print("  %-30s %s     %s   %s" % (
+        "Rs per at-risk event",
+        _rupees(int(round(truth["money_per_event"]))),
+        _money(money_iv),
+        "covered" if money_covered else "NOT COVERED",
+    ))
+    print()
+    print("  Both potential outcomes are known for every event -- what it does")
+    print("  under arm A AND under arm B -- so the true effect is an exact")
+    print("  quantity rather than an estimate with error of its own. That is what")
+    print("  makes tests/test_estimator_unbiased.py a proof rather than a smell")
+    print("  test, and it is Razorpay's own 'verification capacity is the")
+    print("  bottleneck' thesis turned into a test file.")
+
+    return metrics
 
 
 def sim_signatures(features: Sequence[dict]) -> set:

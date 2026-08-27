@@ -32,16 +32,26 @@ from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple
 
 from pramaan.canonical import GENESIS_HASH, canonical_json, parse_iso, sha256_hex
 
-#: Kinds emitted as of Day 2. Grows one entry at a time, on the day the writer
-#: lands. Planned, in the order the days add them: DIAGNOSIS and RECEIPT_AUDIT
-#: (Day 4), PLAN (Day 5), ACTION (Day 5), CONVERSE and PROMISE (Day 6/7),
-#: OUTCOME and EXCEPTION (Day 3/5).
+#: Kinds emitted as of Day 3. Grows one entry at a time, on the day the writer
+#: lands. Still planned, in the order the days add them: DIAGNOSIS and
+#: RECEIPT_AUDIT (Day 4), PLAN and ACTION (Day 5), CONVERSE and PROMISE
+#: (Day 6/7).
 #:
-#: GATE joined on Day 2, and it has a real writer on the day it joined: the demo
-#: judges every event's deterministic default action through the envelope and
-#: records the verdict. ADR-011 is the reason that matters -- a kind is added
+#: GATE joined on Day 2 and OUTCOME/EXCEPTION on Day 3, each with a real writer
+#: on the day it joined. ADR-011 is the reason that matters -- a kind is added
 #: when something writes it, not when something plans to.
-LEDGER_KINDS: Tuple[str, ...] = ("DETECT", "GATE")
+#:
+#: OUTCOME is one row per event per run: what the arm did, whether the money came
+#: back, and what caused it. EXCEPTION is written only when an arm wanted to act
+#: and could not -- the envelope refused, or the channel was not open at that
+#: hour -- so a run with no exceptions writes no EXCEPTION rows, and that is the
+#: intended behaviour rather than a missing writer.
+#:
+#: **No OUTCOME row carries latent truth.** ``would_recover_unaided`` is the
+#: answer key, not an observation, and the ledger is the artifact a reviewer is
+#: invited to audit. ADR-010 quarantines ground truth in its own table; keeping
+#: it out of the ledger is the same rule applied to the same risk.
+LEDGER_KINDS: Tuple[str, ...] = ("DETECT", "GATE", "OUTCOME", "EXCEPTION")
 
 #: Verdicts a GATE row may carry. Three, never two: AMEND is what the envelope
 #: returns when a step is substantively right and mechanically wrong, and
