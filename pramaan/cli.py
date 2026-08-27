@@ -241,6 +241,30 @@ def run_demo(batch: str, seed: int, out_dir: Path) -> int:
         print("  R1-R11, all caught. Organic violation rate is a Day 5 number, and")
         print("  it is a measure of the planner, not of this component.")
         print()
+    # How much of the envelope this run actually exercised. Printed because the
+    # honest answer is "a little", and a reviewer who assumed otherwise from a
+    # 6,000-event count would be reading more into the number than it carries.
+    from pramaan.envelope import registry as _registry
+    from pramaan.envelope import rules as _rules
+
+    cited = sorted({rule for _, rule in tally["rules"]})
+    print("  rule ids cited        %d (%s)" % (len(cited), ", ".join(cited)))
+    # Counted, not typed. The first version of this line said 25 by hand and the
+    # real figure is 30 -- the same class of error as the grade count it was
+    # written to accompany. See envelope/registry.py.
+    print("  rule ids implemented  %s" % _registry.summary())
+    print("  The demo path is narrow on purpose: the default actions are mostly")
+    print("  silent ones, and for a silent action almost nothing has jurisdiction.")
+    print("  It shows the gate runs on every event and records a citable verdict.")
+    print("  It does not show the gate's range -- that is tests/test_envelope_")
+    print("  matrix.py (3,600 action x context x hour x class combinations) and")
+    print("  tests/test_redteam_envelope.py (one engineered violation per rule).")
+    print()
+    print("  regulatory citations  %d of 11 graded [A] (R9 only), %d graded [B]"
+          % (_rules.GRADE_A_COUNT, _rules.GRADE_B_COUNT))
+    print("  ...and R6 cites Razorpay's own docs rather than a regulator, so it")
+    print("  is excluded from the regulator-backed count. See envelope/rules.py.")
+    print()
     print("  Prefixes: R = regulation, and it cites a named instrument. G = a")
     print("  Razorpay decline-reason guardrail -- futility, not law. S = stopping")
     print("  rule. P = house policy. Nothing here cites a regulator for a rule we")
@@ -265,6 +289,10 @@ def run_demo(batch: str, seed: int, out_dir: Path) -> int:
     print("  tamper probe         %s" % tamper)
     truncation = _truncation_probe(conn, ledger.count())
     print("  truncation probe     %s" % truncation)
+    print("  (note the asymmetry: re-hashing catches a *mutated* row on its own,")
+    print("   but a truncated tail leaves every surviving row and link correct --")
+    print("   only the row-count or head anchor sees it. I7 covers mutation")
+    print("   unconditionally and truncation only when anchored.)")
 
     ledger.export_jsonl(ledger_path)
     print("  exported             %s" % _display_path(ledger_path))

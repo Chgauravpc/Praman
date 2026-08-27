@@ -43,6 +43,8 @@ The five modules, and which question each answers:
 ``stopping.py``   when to stop entirely -- S1-S7.
 ``judge.py``      the order all of the above are applied in, and why that order
                   is the interesting part.
+``registry.py``   every rule id the envelope can emit, derived from the five
+                  modules above rather than listed by hand.
 """
 from __future__ import annotations
 
@@ -57,6 +59,7 @@ from pramaan.envelope.context import (
     Ruling,
 )
 from pramaan.envelope.judge import Step, as_step, effective_context, judge, judge_plan
+from pramaan.envelope.registry import ALL_RULE_IDS, POLICY_RULES
 from pramaan.envelope.rules import RULE_IDS, RULE_SOURCES
 from pramaan.envelope.stopping import TERMINAL_RULES
 from pramaan.envelope.tiers import ACTION_TIER, TIER_SPEC, TIERS, tier_of
@@ -82,6 +85,8 @@ __all__ = [
     "effective_context",
     "judge",
     "judge_plan",
+    "ALL_RULE_IDS",
+    "POLICY_RULES",
     "RULE_IDS",
     "RULE_SOURCES",
     "TERMINAL_RULES",

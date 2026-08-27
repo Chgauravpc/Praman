@@ -23,11 +23,24 @@ merely the refusal.
 Why the cases are constructed rather than sampled
 -------------------------------------------------
 
-Thirteen of the 69 reason codes never appear in a 6,000-event batch -- they are
-long-tail classes sampled at a fraction of a percent (DECISIONS.md ADR-007). So
-the simulator cannot be relied on to exercise the taxonomy, and a red-team suite
-built by filtering generated events would leave the most dangerous branches
-untested. These construct their inputs directly.
+**Fifteen** of the 69 reason codes never appear in a 6,000-event batch at the
+project seed -- they are long-tail classes sampled at a fraction of a percent
+(DECISIONS.md ADR-007). So the simulator cannot be relied on to exercise the
+taxonomy, and a red-team suite built by filtering generated events would leave
+the most dangerous branches untested. These construct their inputs directly.
+
+Two notes on that figure, because it was first written as "thirteen" -- inherited
+from Day 1 and restated without re-measurement.
+
+It is **fifteen at seed 42**, the project seed. It is **not seed-invariant**:
+measured across seeds 42/1/7/99/2026 the count is 15/12/11/11/16. So the load-
+bearing claim is the floor, not the number -- *at least eleven codes go untouched
+on any seed tried*, and which eleven changes. That is strictly a better argument
+for constructing inputs than a fixed figure would be, since it means no single
+seed can be inspected once and declared sufficient.
+
+``test_the_simulator_cannot_cover_the_taxonomy`` below measures it rather than
+asserting the constant, so this docstring cannot drift again.
 """
 from __future__ import annotations
 
@@ -705,3 +718,45 @@ def test_the_r9_boundary_second_by_second(at, expected):
     )
     assert judgement.verdict == expected
     assert judgement.rule_id == "R9"
+
+def test_the_simulator_cannot_cover_the_taxonomy():
+    """Measure the coverage gap rather than restating an inherited constant.
+
+    The argument for constructing red-team inputs by hand rests on the simulator
+    leaving a chunk of the taxonomy untouched. That is true, and the specific
+    figure moves with the seed -- which is why this measures the **floor** across
+    several seeds instead of pinning one number. The first version of this file's
+    docstring carried "thirteen", inherited from Day 1 and never re-measured; at
+    the project seed it is fifteen.
+
+    Kept cheap: five seeds on the full batch. If it ever gets slow, cut seeds
+    rather than the assertion, because the assertion is what stops a future
+    session from concluding the simulator is adequate coverage.
+    """
+    from sim import generate as sim
+
+    all_codes = set(taxonomy.BY_CODE)
+    unseen_counts = {}
+    for seed in (42, 1, 7, 99, 2026):
+        seen = {event.cause_signal for event in sim.full_batch(seed)}
+        unseen_counts[seed] = len(all_codes - seen)
+
+    # The project seed, which is the figure the docstring quotes.
+    assert unseen_counts[42] == 15, unseen_counts
+
+    # The floor, which is the claim that actually carries the argument: no seed
+    # gets close to covering the taxonomy, so no single batch can be inspected
+    # and declared sufficient.
+    assert min(unseen_counts.values()) >= 11, unseen_counts
+
+    # And the codes that go missing are the dangerous ones -- long-tail classes,
+    # which is precisely where the envelope's never-retry branches live.
+    seen_42 = {event.cause_signal for event in sim.full_batch(42)}
+    missing = all_codes - seen_42
+    dangerous = {
+        code
+        for code in missing
+        if taxonomy.reason_class_of(code)
+        in ("INSTRUMENT_DEAD", "MERCHANT_CONFIG", "INTEGRATION_BUG", "RISK")
+    }
+    assert dangerous, "the missing codes should include never-retry classes"

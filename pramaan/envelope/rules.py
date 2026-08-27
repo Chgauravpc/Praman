@@ -14,11 +14,54 @@ Grades
 ``[B]``  from secondary summaries of a named primary instrument. Consistent
          across sources, not yet matched to a clause.
 
-As of Day 2, **two of eleven are [A]-verified** (R9, and the R2 thresholds via
-the RBI framework reference). The rest are [B]. That is a worse-looking number
-than "all eleven cite a circular", and it is the honest one. Day 1 recorded all
-eleven as [B] and named R9 as the weakest; R9 was checked first for that reason
-and the 08:00-19:00 figure held.
+As of Day 2, **one of eleven is [A]-verified: R9, and only R9.** The other ten
+are [B]. That is a worse-looking number than "all eleven cite a circular", and it
+is the honest one. Day 1 recorded all eleven as [B] and named R9 as the weakest;
+R9 was checked first for that reason, and the 08:00-19:00 figure held.
+
+**What [A] does and does not mean here.** It means the primary text was read, and
+``read_on`` records when and from where. It does **not** mean the reading is
+authoritative: R9's is one person's, unreviewed, against a notification page
+rather than a countersigned gazette copy, and nobody with a legal background has
+looked at it. That is a real improvement on a secondary summary and it is not the
+end of the process, so the grade carries its provenance rather than standing
+alone.
+
+**This paragraph was wrong when first written**, and the way it was wrong is
+worth keeping in front of whoever edits it next. It claimed *two* of eleven, on
+the reasoning that R2's Rs 15,000 / Rs 1,00,000 thresholds were verified "via the
+RBI framework reference". They are not: R2's instrument in ``RULE_SOURCES`` is
+``"Ibid."``, which inherits R1's [B] source, and R2 is graded ``"B"`` sixty lines
+below the sentence that claimed otherwise. ``_self_check`` would have refused an
+[A] grade on R2 without quoted operative words -- so the guard worked, on the
+data structure, while the prose beside it drifted in the direction of
+overstatement. Against a project whose stated principle is that admitting a
+summary beats claiming a reading, that is the worst available direction to drift
+in.
+
+The mechanism added in response: ``GRADE_A_COUNT`` and ``GRADE_B_COUNT`` are
+derived from ``RULE_SOURCES`` at import, and
+``tests/test_envelope_matrix.py::test_the_published_grade_counts_match_the_prose``
+reads the numbers back out of this docstring, ``README.md`` and ``STATE.md`` and
+fails if any of them disagrees with the dict. Prose that states a count is now
+under test, because a compliance count is a claim and claims need mechanisms
+rather than care.
+
+Authority, which is a separate axis from grade
+----------------------------------------------
+
+Grade says how well a source was read. **Authority says who wrote it**, and the
+two come apart in exactly one place. R6 -- the one-attempt-plus-three-retries
+norm -- is real, load-bearing and documented, and its source is *Razorpay's own
+subscription documentation*, not a regulator. Under this package's own convention
+(``context.py``) that is a ``G``-flavoured source sitting on an ``R`` id.
+
+It keeps the ``R6`` id, because PRD 6.5 numbers it R6 and renumbering a rule that
+other documents cross-reference costs more than it fixes. But it now declares
+``authority="vendor"``, ``_self_check`` requires every rule to declare one, and
+the demo does not count it toward the regulatory total. So a reader who checks the
+one rule in the R namespace whose source is not a regulator finds the discrepancy
+already labelled rather than discovering it.
 
 What each rule actually gates
 -----------------------------
@@ -87,6 +130,10 @@ from pramaan.envelope.windows import check_window, reopens_in_seconds
 # ===========================================================================
 
 
+#: Who wrote the source. Distinct from ``grade``, which is how well it was read.
+AUTHORITIES: Tuple[str, ...] = ("regulator", "vendor")
+
+
 @dataclass(frozen=True)
 class RuleSource:
     rule_id: str
@@ -95,6 +142,15 @@ class RuleSource:
     grade: str    # A | B
     #: Quoted only where the primary text was actually read.
     operative_words: str = ""
+    #: ``regulator`` for ten of the eleven. ``vendor`` for R6 alone -- see the
+    #: module docstring. Explicit rather than defaulted, so a rule added later
+    #: has to state which it is.
+    authority: str = "regulator"
+    #: How and when the primary text was read. Required for an [A] grade, empty
+    #: otherwise: "verified" means nothing without saying who verified it and
+    #: against what, and every [A] in this file is currently one person's single
+    #: unreviewed reading.
+    read_on: str = ""
 
 
 RULE_SOURCES: Dict[str, RuleSource] = {
@@ -146,6 +202,7 @@ RULE_SOURCES: Dict[str, RuleSource] = {
         "halted when the retries are exhausted.",
         "Razorpay subscription payment-retry documentation",
         "B",
+        authority="vendor",
     ),
     "R7": RuleSource(
         "R7",
@@ -178,6 +235,17 @@ RULE_SOURCES: Dict[str, RuleSource] = {
             "persistently calling the borrower and/ or calling the borrower "
             "before 8:00 a.m. and after 7:00 p.m. for recovery of overdue loans"
         ),
+        # Provenance, recorded because [A] is the strongest claim in this file and
+        # a reader is entitled to know how strong "verified" actually is. The RBI
+        # notification page (rbi.org.in, NotificationUser.aspx?Id=12378) was
+        # fetched and read on 2026-08-27.
+        #
+        # That is **one unreviewed reading by one person**. Better than a
+        # secondary summary, and not the same thing as a second pair of eyes on
+        # the gazette text: it has not been checked against a countersigned copy,
+        # and nobody with a legal background has looked at it. An [A] here means
+        # "the primary text was read", not "the reading is authoritative".
+        read_on="2026-08-27, rbi.org.in notification page, single unreviewed reader",
     ),
     "R10": RuleSource(
         "R10",
@@ -196,6 +264,24 @@ RULE_SOURCES: Dict[str, RuleSource] = {
 }
 
 RULE_IDS: Tuple[str, ...] = tuple("R%d" % n for n in range(1, 12))
+
+#: Derived, never written by hand. Every prose statement of these counts -- in
+#: this module's docstring, in README.md and in STATE.md -- is checked against
+#: these by a test. See the docstring for why that test exists.
+GRADE_A_COUNT: int = sum(1 for s in RULE_SOURCES.values() if s.grade == "A")
+GRADE_B_COUNT: int = sum(1 for s in RULE_SOURCES.values() if s.grade == "B")
+
+#: The rules whose source is a regulator. R6's is a vendor document.
+REGULATOR_BACKED_RULES: Tuple[str, ...] = tuple(
+    rule_id
+    for rule_id, source in RULE_SOURCES.items()
+    if source.authority == "regulator"
+)
+VENDOR_BACKED_RULES: Tuple[str, ...] = tuple(
+    rule_id
+    for rule_id, source in RULE_SOURCES.items()
+    if source.authority == "vendor"
+)
 
 # -- thresholds, as named constants -----------------------------------------
 
@@ -618,10 +704,23 @@ def _self_check() -> None:
     for rule_id, source in RULE_SOURCES.items():
         if source.grade not in ("A", "B"):
             raise AssertionError("%s has grade %r; use A or B" % (rule_id, source.grade))
+        if source.authority not in AUTHORITIES:
+            raise AssertionError(
+                "%s must declare an authority from %r, got %r -- grade says how "
+                "well a source was read, authority says who wrote it, and a rule "
+                "in the R namespace whose source is a vendor has to say so"
+                % (rule_id, AUTHORITIES, source.authority)
+            )
         if source.grade == "A" and not source.operative_words:
             raise AssertionError(
                 "%s is graded [A], so the operative words must be quoted -- an "
                 "[A] grade means the primary text was read" % rule_id
+            )
+        if source.grade == "A" and not source.read_on:
+            raise AssertionError(
+                "%s is graded [A] but does not say how or when it was read. "
+                "'Verified' with no provenance is an unfalsifiable claim, which "
+                "is the one kind this file must not carry" % rule_id
             )
         if not source.instrument:
             raise AssertionError("%s cites no instrument" % rule_id)
@@ -646,6 +745,17 @@ def _self_check() -> None:
         )
     if AFA_EXEMPT_CEILING_HIGH_PAISE not in AMOUNT_BAND_CEILINGS_PAISE:
         raise AssertionError("R2's Rs 1,00,000 ceiling must be an amount-band boundary")
+
+    if GRADE_A_COUNT + GRADE_B_COUNT != len(RULE_IDS):
+        raise AssertionError("every rule must carry a grade")
+    # R6 is the only vendor-sourced rule. If a second one appears, the module
+    # docstring's argument about the R namespace needs rewriting, not extending.
+    if VENDOR_BACKED_RULES != ("R6",):
+        raise AssertionError(
+            "R6 is the only rule whose source is a vendor document; got %r. A "
+            "second one means the R/G namespace boundary needs restating"
+            % (VENDOR_BACKED_RULES,)
+        )
 
 
 _self_check()

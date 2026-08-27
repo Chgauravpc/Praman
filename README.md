@@ -121,22 +121,37 @@ Three examples of what it does, each with a test behind it:
 cites a regulator for a rule it invented is worth less than one that admits which
 is which: `R` regulation (each naming an instrument), `G` Razorpay
 decline-reason guardrail (futility, not law), `S` stopping rule, `P` house
-policy. Two of the eleven regulatory rules are currently verified against a
-primary instrument; the other nine say so.
+policy. **One of the eleven regulatory rules is verified against a primary
+instrument. The other ten say so.** And one of the eleven — R6, the
+one-attempt-plus-three-retries norm — cites Razorpay's own documentation rather
+than a regulator's; it declares `authority="vendor"` and is excluded from the
+regulator-backed count, because the argument for grading sources collapses the
+moment the R namespace is padded.
 
 On the 6,000-event batch the envelope judges every one of the deterministic
 default actions and refuses none of them — which is the expected result, not an
 inert gate: that map is *built* compliant, which is what makes it a fair arm B
-rather than a strawman. The evidence that the envelope is not inert is
-`tests/test_redteam_envelope.py`: one engineered violation per rule R1–R11, each
-asserting the rule id rather than merely the refusal, all caught.
+rather than a strawman.
+
+**Be precise about what the demo therefore demonstrates.** Those 6,000 verdicts
+cite **three** rule ids — R3, G7 and R5 — out of the twenty-five the envelope
+implements, because the default actions are overwhelmingly silent ones and for a
+silent action almost nothing has jurisdiction. The demo proves the gate runs on
+every event and records a citable verdict. It does not exercise the gate's range.
+
+That lives in the tests: `test_envelope_matrix.py` sweeps 3,600 (action × context
+× hour × reason class) combinations plus a full amendment re-judgement pass, and
+`test_redteam_envelope.py` carries one engineered violation per rule R1–R11, each
+asserting the rule id rather than merely the refusal. The injected catch rate is
+100% — over **one** constructed case per rule. It shows each rule fires and cites
+itself; it is not a measure of how many *ways* each rule can be violated.
 
 ## Try it
 
 ```bash
 make demo        # 200-event dev batch, keyless, no network call
 make demo-full   # 6,000-event batch (sized from a power calculation)
-make test        # 226 tests, including the invariants below
+make test        # 232 tests, including the invariants below
 make verify      # tests, plus a byte-identical-output check across two runs
 ```
 
@@ -155,7 +170,7 @@ These are properties, each with a test, and they hold at every commit.
 | **I2** | Two different events sharing a signature produce **byte-identical prompt bytes** | `tests/test_prompt_canonical.py` |
 | **I3** | The envelope returns a verdict **and a rule id** for every action × context | `tests/test_envelope_matrix.py` |
 | **I4** | Every rule R1–R11 catches its engineered violation | `tests/test_redteam_envelope.py` |
-| **I7** | The hash chain detects any row mutation, deletion or reordering | `tests/test_ledger_chain.py` |
+| **I7** | The hash chain detects any row mutation or reordering. **Truncation of the tail needs the row-count or head anchor** — a shortened chain is internally perfect, so re-hashing cannot see it | `tests/test_ledger_chain.py` |
 | **I8** | Same seed and same cache → byte-identical output | `make verify` |
 | **I9** | `make demo` completes with every API key unset | `make demo` |
 
@@ -223,15 +238,27 @@ pramaan/
 - **The event stream is synthetic.** The reason distribution is drawn from PSP
   audit figures that the source itself grades as directional, and it is used for
   its shape rather than its digits.
-- **Nine of the eleven regulatory provisions are still graded [B]** — drawn from
+- **Ten of the eleven regulatory provisions are graded [B]** — drawn from
   secondary summaries of a named primary instrument, consistent across sources,
-  and not yet matched to a clause. The grade is recorded *in the rule*
-  (`envelope/rules.py`), and the code refuses at import to let a rule claim [A]
-  without quoting the operative words, so the count cannot drift upward by
-  optimism. **R9 is [A]:** RBI/2022-23/108,
-  `DOR.ORG.REC.65/21.04.158/2022-23`, 12 August 2022. The TRAI 09:00–21:00
-  figure everybody quotes is the one that could *not* be traced to a primary
-  clause, which was the opposite of what was expected.
+  and not yet matched to a clause. **R9 alone is [A]:** RBI/2022-23/108,
+  `DOR.ORG.REC.65/21.04.158/2022-23`, 12 August 2022 — and that reading is one
+  person's, unreviewed. The TRAI 09:00–21:00 figure everybody quotes is the one
+  that could *not* be traced to a primary clause, which was the opposite of what
+  was expected.
+
+  The grade is recorded *in the rule* (`envelope/rules.py`), and the code refuses
+  at import to let a rule claim [A] without quoting the operative words. **That
+  guard was not enough**: the first version of this section said "nine of eleven"
+  and `rules.py` said "two of eleven", while the dict itself graded one — the
+  guard protects the data structure and had nothing to say about the prose beside
+  it. The counts in this file are now derived-checked against the dict by
+  `test_the_published_grade_counts_match_the_prose`, because a compliance count
+  is a claim and claims need mechanisms rather than care.
+- **R6 sits in the regulatory namespace and cites a vendor document.** The
+  retry-cap norm comes from Razorpay's subscription docs, not a regulator. It
+  keeps its `R6` id for cross-referencing and declares the discrepancy in
+  `RULE_SOURCES`; it is the one rule where the namespace and the source
+  disagree, and it is labelled rather than left to be found.
 - **Whether a payment-retry message is a "service" or a "promotional"
   communication is a legal judgment, and this repo assumes the former.** It is
   the single biggest compliance assumption in the system, because the service
