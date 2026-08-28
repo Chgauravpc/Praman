@@ -38,20 +38,56 @@ TIERS: Tuple[str, ...] = ("strong", "fast")
 #: The only place a model ID appears.
 #:
 #: Ordered per tier: the first entry is tried first, and the order is fixed so
-#: that offline replay is deterministic. Verify these against the live free-tier
-#: lineup before the Day 7 full-batch run -- the Day 0 checklist exists partly
-#: for this.
+#: that offline replay is deterministic.
+#:
+#: **Corrected on Day 4, and the correction was overdue by twelve days.** Days
+#: 1-3 named ``llama-3.3-70b-versatile`` and ``llama-3.1-8b-instant``, carried as
+#: an open item in STATE.md ("model IDs are unverified; nothing has hit either
+#: API"). Checked on 2026-08-28 against Groq's own deprecation page: both were
+#: announced deprecated on 2026-06-17 and **shut down on 2026-08-16**. They had
+#: been dead for twelve days. The first live call of the project would have
+#: failed on a model that no longer exists, and the reason this cost nothing is
+#: luck rather than design -- the item was scheduled for the same day the first
+#: call was scheduled.
+#:
+#: The Groq replacements are the ones Groq's deprecation notice names. The
+#: OpenRouter failovers are read from its live free-models collection on the same
+#: date, and are a *rotating* roster -- the two Llama entries this file used to
+#: carry are no longer on it at all, and neither is gpt-oss. So the failover
+#: entries below are correct on the date stated and are not to be trusted
+#: indefinitely.
+#:
+#: Which is why ``python -m pramaan.cli models`` exists. It asks each provider
+#: what it actually serves and reports which of these IDs resolve. That turns a
+#: fact with an expiry date into a check anyone can re-run, which is the only
+#: durable answer to a free-tier lineup that changes without notice.
+#:
+#: Verified present: 2026-08-28.
 MODELS: Dict[str, List[Tuple[str, str]]] = {
     # (provider, model_id)
     "strong": [
-        ("groq", "llama-3.3-70b-versatile"),
-        ("openrouter", "meta-llama/llama-3.3-70b-instruct:free"),
+        # Groq's named replacement for llama-3.3-70b-versatile.
+        ("groq", "openai/gpt-oss-120b"),
+        # A 120B-class free model on OpenRouter, chosen to be comparable rather
+        # than merely available: the strong tier is the investigator, and a small
+        # failover model would silently change what the agent is capable of
+        # reasoning about while every metric kept reporting normally.
+        ("openrouter", "nvidia/nemotron-3-super-120b-a12b:free"),
     ],
     "fast": [
-        ("groq", "llama-3.1-8b-instant"),
-        ("openrouter", "meta-llama/llama-3.1-8b-instruct:free"),
+        # Groq's named replacement for llama-3.1-8b-instant.
+        ("groq", "openai/gpt-oss-20b"),
+        ("openrouter", "nvidia/nemotron-3.5-lightning:free"),
     ],
 }
+
+#: Where the two figures above came from, so a later reader can re-check rather
+#: than re-derive.
+MODEL_SOURCES: Dict[str, str] = {
+    "groq": "https://console.groq.com/docs/deprecations",
+    "openrouter": "https://openrouter.ai/collections/free-models",
+}
+MODELS_VERIFIED_ON = "2026-08-28"
 
 PROVIDER_ENDPOINTS: Dict[str, str] = {
     "groq": "https://api.groq.com/openai/v1/chat/completions",
@@ -385,6 +421,56 @@ class LLMClient:
         return max(0.1, delay)
 
     # -- reporting -------------------------------------------------------
+
+    def available_models(self, provider: str) -> List[str]:
+        """Ask a provider what it actually serves. Requires that provider's key.
+
+        Both providers expose an OpenAI-compatible ``GET /models``. This is the
+        cheapest possible answer to "is the configured ID real", it costs no
+        completion tokens, and it is the thing that should have been run on Day 0.
+        """
+        import requests
+
+        key = self._api_key(provider)
+        if not key:
+            raise RuntimeError("no API key for %s" % provider)
+        endpoint = PROVIDER_ENDPOINTS[provider].replace("/chat/completions", "/models")
+        response = requests.get(
+            endpoint, headers={"Authorization": "Bearer %s" % key}, timeout=30
+        )
+        response.raise_for_status()
+        payload = response.json()
+        return sorted(str(item.get("id", "")) for item in payload.get("data", []))
+
+    def verify_models(self) -> Dict[str, Any]:
+        """Check every configured ID against what its provider serves.
+
+        Returns a report rather than raising. A provider with no key is reported
+        as ``skipped``, not as a failure: ``make demo`` must complete with every
+        key unset (NFR-4), so a verification that raised without a key would make
+        this command unusable in exactly the configuration the project promises to
+        support.
+        """
+        report: Dict[str, Any] = {"verified_on_record": MODELS_VERIFIED_ON, "providers": {}}
+        for provider in sorted(PROVIDER_ENDPOINTS):
+            configured = sorted(
+                {model for tier in MODELS.values() for prov, model in tier if prov == provider}
+            )
+            entry: Dict[str, Any] = {"configured": configured}
+            if not self._api_key(provider):
+                entry["status"] = "skipped -- no API key"
+            else:
+                try:
+                    served = self.available_models(provider)
+                except Exception as exc:  # noqa: BLE001 -- a report, not a raise
+                    entry["status"] = "error: %s" % exc
+                else:
+                    entry["status"] = "checked"
+                    entry["served_count"] = len(served)
+                    entry["present"] = [m for m in configured if m in served]
+                    entry["missing"] = [m for m in configured if m not in served]
+            report["providers"][provider] = entry
+        return report
 
     def stats(self) -> Dict[str, Any]:
         """Printed on every run.

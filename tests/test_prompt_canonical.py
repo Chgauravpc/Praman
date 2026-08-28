@@ -273,3 +273,57 @@ def test_every_forbidden_pattern_is_named():
     for label, pattern in FORBIDDEN_PATTERNS:
         assert label and not label.startswith("pattern")
         assert pattern.pattern
+
+
+# --------------------------------------------------------------------------
+# The screen's discrimination between an identifier and an enum value (Day 4)
+# --------------------------------------------------------------------------
+#
+# Added when the investigator first tried to put a reason code in a prompt and
+# the screen refused it. The original pattern keyed on the prefix alone, so
+# `order_already_paid` -- a closed-domain Razorpay reason code -- was treated as
+# an order id. The correction discriminates on identifier *shape*, and these two
+# tests are what stop the correction from having quietly widened the hole.
+
+
+def test_real_razorpay_shaped_identifiers_are_still_refused():
+    """Every identifier shape the screen exists to catch, still caught.
+
+    This is the test that matters after loosening a guard. Listed exhaustively
+    rather than sampled, and including the all-lowercase case that the shape rule
+    alone would miss and the length backstop catches.
+    """
+    from pramaan.llm.prompts import PromptCanonicalityError, assert_no_identifiers
+
+    shapes = [
+        "pay_29QQoUBi66xm2f",       # a real Razorpay payment id
+        "order_HkjF8sd9Lm2xQq",
+        "sub_JK9dEwFqPl",
+        "cust_1Aa2Bb3Cc4",
+        "inv_MnB4vC7xZ2",
+        "txn_9d8f7a6b5c4d",
+        "rzp_test_abc123XY",
+        "evt_0042_000123",          # this project's own event id
+        "cp_00071",                 # and its counterparty id
+        "pay_abcdefghijklmn",       # all lowercase: the length backstop
+    ]
+    for token in shapes:
+        with pytest.raises(PromptCanonicalityError):
+            assert_no_identifiers("context: %s" % token)
+
+
+def test_every_reason_code_in_the_taxonomy_is_promptable():
+    """All 69 codes must survive the screen.
+
+    ``get_reason_taxonomy`` exists to ground the agent in real reason-code
+    semantics (PRD 6.2), and ``cause_signal`` is a column in the agent's
+    projection, so any query grouping by it renders codes into prompt bytes. A
+    screen that refuses even one code makes that tool unusable on the incident
+    where that code matters.
+    """
+    from pramaan.llm.prompts import assert_no_identifiers
+    from pramaan.taxonomy import BY_CODE
+
+    for code in sorted(BY_CODE):
+        assert_no_identifiers("cause_signal: %s" % code, context="taxonomy code")
+    assert len(BY_CODE) == 69

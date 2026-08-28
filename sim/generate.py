@@ -31,13 +31,16 @@ import math
 from dataclasses import dataclass, replace
 from datetime import timedelta
 from random import Random
-from typing import Dict, Iterator, List, Sequence, Tuple
+from typing import TYPE_CHECKING, Dict, Iterator, List, Optional, Sequence, Tuple
 
 from pramaan import canonical
 from pramaan.config import SIM_EPOCH
 from pramaan.eval.arms import ArmAssigner as _ArmAssigner
 from pramaan.sense.models import Counterparty, LatentTruth, RiskEvent
 from pramaan.taxonomy import BY_CODE, CODES_BY_CLASS, REASON_CLASS_POLICY
+
+if TYPE_CHECKING:  # pragma: no cover -- sim.incident imports this module
+    from sim.incident import DegradationSpec
 
 # --------------------------------------------------------------------------
 # PRD 5.1 -- the failure-reason distribution
@@ -354,12 +357,26 @@ def _external_ref(rng: Random) -> str:
     )
 
 
-def generate(count: int, seed: int = 42, days: int = 0) -> List[RiskEvent]:
+def generate(
+    count: int,
+    seed: int = 42,
+    days: int = 0,
+    degradation: "Optional[DegradationSpec]" = None,
+) -> List[RiskEvent]:
     """Generate a seeded batch of payment-failure RiskEvents.
 
     Deterministic: the same (count, seed, days) reproduces byte-identical events
     on any machine. Sorted by (detected_at, event_id) so ingestion order is the
     store's iteration order, which is what makes the ledger hash reproducible.
+
+    ``degradation`` injects one incident (Day 4, ``sim/incident.py``). It
+    defaults to None, and the None path is *exactly* the Day 3 code path: the
+    injection happens after this loop finishes, appending events rather than
+    perturbing draws, so every figure Day 3 pinned reproduces unchanged. That is
+    asserted in ``tests/test_incident.py``, not merely intended -- the cheap way
+    to add an incident would have been a conditional inside the loop, and it
+    would have shifted the RNG stream for every event after the first branch and
+    silently invalidated the arm-vector SHA-256 pins.
     """
     if count <= 0:
         raise ValueError("count must be positive")
@@ -446,6 +463,16 @@ def generate(count: int, seed: int = 42, days: int = 0) -> List[RiskEvent]:
     # so a module-level import either way round would be circular.
     from sim.latent import enrich
 
+    # The incident, if one was asked for. After the base loop and after the
+    # sort, so the base stream is untouched; before enrichment, so injected
+    # events get their capability/intent latents like any other event. An
+    # injected event without them would be read by the oracle as "this block
+    # never clears", making the incident invisible to every arm.
+    if degradation is not None:
+        from sim.incident import inject
+
+        events, _truth = inject(events, degradation, seed, arms=arms)
+
     events = [replace(e, latent=enrich(e, seed)) for e in events]
     return events
 
@@ -461,6 +488,33 @@ def dev_batch(seed: int = 42) -> List[RiskEvent]:
 
 def full_batch(seed: int = 42) -> List[RiskEvent]:
     return generate(FULL_BATCH_SIZE, seed=seed)
+
+
+#: The investigator's batch. Larger than the 200-event dev batch, and the reason
+#: is rows rather than tokens: one injected incident costs one investigation
+#: either way, and SQL is free. See ``sim.incident.DEV_INCIDENT``.
+INVESTIGATE_BATCH_SIZE = 1_200
+INVESTIGATE_BATCH_DAYS = 8
+
+
+def dev_batch_degraded(
+    seed: int = 42,
+    count: int = INVESTIGATE_BATCH_SIZE,
+    days: int = INVESTIGATE_BATCH_DAYS,
+):
+    """The investigator's batch: a clean stream plus one injected incident.
+
+    Returns ``(events, truth)``.
+
+    A *separate* batch, not a replacement for ``dev_batch``. Day 3's figures are
+    pinned against ``dev_batch`` and its 68/67/65 arm vector; the investigator
+    needs a world where something is actually wrong. Two batches -- one pinned,
+    one degraded -- is the only arrangement in which both statements stay true.
+    """
+    from sim.incident import DEV_INCIDENT, truth_for
+
+    events = generate(count, seed=seed, days=days, degradation=DEV_INCIDENT)
+    return events, truth_for(DEV_INCIDENT)
 
 
 # --------------------------------------------------------------------------

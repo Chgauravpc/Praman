@@ -904,3 +904,243 @@ The same split is now used in the demo's estimator-validation section, where the
 true ATE (+3.02pp) is printed next to the estimate (+0.58pp [−2.27, +3.43]) with
 "covered" against each — which is the whole of PRD §8.2 on one screen.
 
+
+---
+
+## ADR-030 — The agent queries a projection in a separate database, not the event store
+
+### Decision
+
+The investigator's `query_sql` runs against a **fresh in-memory SQLite connection**
+holding three projected tables — `agent_events`, `agent_traffic`, `agent_downtime`.
+The real store is never attached, and every projected column is low-cardinality or
+banded.
+
+### Why
+
+Two guarantees fall out of the same construction, and both were otherwise going to
+need a denylist.
+
+**Ground truth becomes unreachable rather than merely un-joined.** ADR-010 put
+latent truth in its own table so that `SELECT * FROM events` cannot return it. That
+was sufficient while nothing wrote SQL. Day 4 hands an LLM a SQL tool, and
+`has_intent` is now in that table — an investigator that could read it would know
+which customers will respond before contacting any of them, which is not a
+diagnosis, it is the answer key with extra steps. A regex refusing the word
+`latent` would have been the cheap version and would have been one creative
+spelling away from failing open. A database that does not contain the table cannot
+be tricked into reading it.
+
+**Tool output becomes safe in a prompt by construction.** `llm.call` screens every
+prompt with `assert_no_identifiers`, and a multi-turn agent must feed tool results
+back in. The naive implementation puts raw rows in front of the screen and breaks
+on turn one. The tempting fix — relax the screen for evidence — is precisely the
+failure PRD §9.1 says no test catches: the system keeps working, every call becomes
+a cache miss, and the budget goes from ~800K to ~15M silently.
+
+So the screen stayed byte-for-byte strict and the data was made canonical instead:
+no `event_id`, no `counterparty_id`, no `external_ref`; time as an integer
+`day_index` plus `hour_of_day`, never a date string; money as `amount_band` and its
+label, never paise. `tests/test_investigate_tools.py` runs the unmodified screen
+over every tool's rendered output, which is the actual guarantee.
+
+### Consequences
+
+Read-only is enforced by SQLite's own `set_authorizer` — SELECT, READ on the three
+tables, and FUNCTION; everything else denied — rather than by a keyword denylist. A
+regex looking for `DROP` is a thing to be evaded; an authorizer is a thing to be
+obeyed. The keyword screen stays in front of it because a named error is kinder to a
+model that can still recover, but it is the second line of defence.
+
+The cost is that the agent cannot see anything the projection does not carry. That
+is a real constraint on open-world discovery and it is the right trade: PRD §6.1's
+examples — amounts clustering above the AFA threshold, one segment's friction
+rising, a method silently disabled — are all reachable from banded columns, and
+none of them needs an exact rupee figure or a timestamp.
+
+`build_agent_db(authorize=False)` exists for schema introspection in tests, because
+the authorizer refuses `sqlite_master` and `PRAGMA table_info` — correctly, and
+that makes "assert this database has no latent table" unwriteable against an
+authorized connection. A test greps `pramaan/` to assert no production caller
+passes it.
+
+---
+
+## ADR-031 — The harness stamps a receipt's hash; the model never transcribes it
+
+### Decision
+
+The model cites only `call_id` values (`tc_01`, `tc_02`). The harness builds the
+`Receipt` objects from its own tool log, stamping `tool`, `args_hash`,
+`result_hash` and `row_count`. The auditor then **independently recomputes** each
+digest from the stored result and compares.
+
+### Why
+
+PRD §6.2's illustrative JSON shows a receipt carrying `result_hash` next to
+`call_id`, which reads as though the model transcribes the digest. Implemented
+literally that is weaker, for two reasons and one of them is fatal.
+
+A 64-character hex digest in prompt bytes is exactly what the canonicality screen
+refuses — a hex digest is the canonical high-cardinality string. Showing the model
+a hash to copy means either weakening the screen or truncating the digest until it
+is no longer tamper-evident. Neither is acceptable, and the first is the failure
+mode PRD §9.1 is written about.
+
+And a model that can transcribe a hash for a true claim can transcribe it just as
+accurately for a false one. Transcription proves the model read the output; it does
+not bind the claim to it.
+
+Recomputing catches strictly more: a fabricated `call_id`, a diagnosis edited after
+the fact, and a tool log whose stored result was altered after the receipt was
+issued. `test_tampered_stored_result_is_detected` exercises the third — it forges a
+payload and leaves the recorded hash alone, which a string comparison of two
+recorded hashes would pass while providing none of the guarantee. That is the
+simplification BUILD-PLAN Day 4 declined, and this is the test that shows why.
+
+### Consequences
+
+`call_id`s are **sequential**, not hash-derived, and that is a correction rather
+than laziness. An 8-character hex id contains four consecutive digits often enough
+to matter, so `assert_no_identifiers` would refuse the transcript on a schedule set
+by the hash — an investigator failing intermittently for a reason with no
+relationship to anything. Sequential ids are deterministic, cheap for a model to
+cite accurately, and auditable by eye.
+
+Their being guessable buys an attacker nothing: the auditor's third check binds the
+claim to the *content* of the result, so citing a real `call_id` for an unrelated
+claim is caught by the numbers not matching rather than by the id being secret.
+
+---
+
+## ADR-032 — The receipt auditor checks relevance as well as provenance, and its limits are asserted as tests
+
+### Decision
+
+Beyond PRD §6.2's two checks, a claim is stripped if any **number** in its text does
+not appear in the output of a call it cites. Both sides are normalised to one scale
+— percentage points — before comparison. Two limits are recorded as executable
+tests rather than as prose.
+
+### Why
+
+Provenance is not relevance. A claim can cite a real call whose result does not
+support it: "tier3's failure rate rose 20 points, receipt tc_02" when tc_02
+reported 2.0pp. Both PRD checks pass — the call exists, the hash matches — and the
+claim is false in the direction that moves money, because a planner reads a
+magnitude, not a citation. The check is mechanical, cheap, and binds exactly the
+subset of claims anything acts on.
+
+The single-scale normalisation is the second attempt. The first used one relative
+tolerance across both scales and cleared a claim of "41.0pp" against evidence of
+41.7% — a third of a point of fabrication verified clean. The same quantity appears
+as 0.417 in a payload and 41.7% in a claim, and any absolute floor generous enough
+for one is five percentage points on the other, so normalising first is what makes
+a single tolerance sound.
+
+### Consequences
+
+Two limits, and both are asserted rather than described.
+
+A purely qualitative claim citing a real receipt passes all three checks and is
+unverifiable by any of them. Receipts bound what a diagnosis may *assert as fact*;
+they do not make its judgement correct.
+
+And check 3 verifies that a number is *present* in the evidence, not that it is
+attached to the right thing — a claim about tier3 quoting tier2's rate passes.
+Binding a number to its grammatical subject is not a mechanical operation and would
+put a language model inside the verifier that exists to verify a language model.
+`test_number_present_but_attached_to_the_wrong_entity_is_a_known_limit` asserts the
+hole and tells whoever closes it to delete the test.
+
+Reporting receipt coverage as though it were accuracy would be the overclaim this
+whole apparatus exists to avoid. So the run prints **coverage and survival as two
+numbers**, with the gap between them labelled: coverage counts claims that cited
+something, survival counts claims whose citation checked out, and a model that
+cites confidently and wrongly scores 100% on the first.
+
+The measurement that covers what receipts cannot is hypothesis precision against
+canary outcomes (PRD §8), which is Day 6's.
+
+---
+
+## ADR-033 — The incident is injected by appending, and the default is off
+
+### Decision
+
+`generate(degradation=None)` is the default and executes exactly the Day 3 code
+path. An injected incident is appended **after** the generation loop completes and
+after the sort, never branched inside it. The degraded batch is a separate batch
+(`dev_batch_degraded`), not a replacement for `dev_batch`.
+
+### Why
+
+Day 3 pinned a great deal against `generate()` output: arm vectors by SHA-256, a
+22.0× memoisation ratio, an 18,028-row full-batch ledger, a 4,905/1,095/0 envelope
+split, and a headline incremental figure with a bootstrap interval. The obvious way
+to add an incident is a conditional inside the loop, and it would have shifted the
+RNG stream for every event after the first branch taken — invalidating all of it,
+silently, in a way that reads as "the simulator changed slightly".
+
+Appending means every base event survives with the same id, amount, timestamp and
+arm. `test_incident.py` asserts that the degraded batch *contains* the undegraded
+one event for event, and pins both undegraded batches by SHA-256 over their rows
+and latents.
+
+### Consequences
+
+Two batches exist, one pinned and one degraded, and that is the only arrangement in
+which both "Day 3's figures are unchanged" and "the investigator has a world where
+something is wrong" stay true.
+
+The injection is shaped to be diagnostically ambiguous in exactly the way PRD §6.3
+describes: a **rate shift** (extra failures, no extra attempts — something broke)
+and a **mix shift** (extra attempts carrying the slice's own unchanged rate —
+nothing broke) in the same window. The blended rate rises +7.3pp and splits +3.8pp
+rate against +3.5pp mix, so the naive reading — "failures are up seven points, the
+bank is down" — is about half wrong. An investigator that reports the blended figure
+has failed.
+
+Ground truth is recorded as **what was injected**, not as the answer the
+decomposition should print. Recording "+3.8pp of rate effect" would make the test a
+comparison against a number typed by the same hand that wrote the tool — the
+ADR-024 mistake one layer up. The test derives the expected decomposition itself
+from raw SQL counts, per ADR-023.
+
+---
+
+## ADR-034 — A fact with an expiry date is stored as a query, not as a constant
+
+### Decision
+
+`pramaan/llm/client.py` keeps its single `MODELS` table, and now also records
+`MODELS_VERIFIED_ON` and the source URL per provider. `python -m pramaan.cli models`
+(`make models`) prints every configured ID and, when a key is present, asks each
+provider's `GET /models` what it actually serves, reporting each ID as PRESENT or
+MISSING. It makes no completion call.
+
+### Why
+
+The two model IDs this project carried for three days had been shut down twelve days
+before anyone looked. They were flagged as an open item in `STATE.md` and carried a
+source comment reading "verify these against the live free-tier lineup". Every
+mechanism for catching the problem existed, and not one of them was a check.
+
+The distinction that matters: most constants in this project are constants because
+they are stable — the reason taxonomy, the amount bands, the regulatory windows.
+Free-tier model availability is not stable, and it was being stored as though it
+were, with a reminder attached where a verification belonged.
+
+### Consequences
+
+The corrected IDs are not the fix; the command is. A free-tier lineup changes
+without notice — when the Groq entries were re-checked, *both* OpenRouter failovers
+had also disappeared from its free roster, along with gpt-oss entirely — so the
+correct artefact re-derives the answer rather than restating it with a fresher date.
+
+The command reports a keyless provider as `skipped`, not as a failure. `make demo`
+must complete with every key unset (NFR-4), and a verification that raised without a
+key would be unusable in the configuration the project promises to support.
+
+The general rule, applied from here: if a constant's truth has a shelf life, ship
+the check next to it.

@@ -103,6 +103,44 @@ class Diagnosis(Strict):
     #: artifact back to its exact prompt and response (PRD 12.2).
     llm_call_ids: List[str] = Field(default_factory=list)
 
+    #: The model's own confidence. Day 4. Recorded but never *trusted*: the
+    #: auditor zeroes it on an UNSUPPORTED verdict, because a model's stated
+    #: confidence in a claim it could not evidence is the least informative
+    #: number in the object.
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+
+    #: What would disprove the hypothesis. Required of the model by the
+    #: investigator prompt (PRD 6.2), and required for two reasons that are worth
+    #: keeping distinct: stating a falsifier produces a sharper hypothesis, and
+    #: the falsifier is the specification for the canary that tests it on Day 6.
+    #: An empty string is a legal parse and a failed instruction -- the same
+    #: asymmetry Claim.receipt_ids has, and for the same reason: the failure rate
+    #: is a number worth publishing rather than hiding behind a validator.
+    falsifiable_by: str = ""
+
+    #: SUPPORTED | UNSUPPORTED, stamped by the receipt auditor. Defaults to
+    #: UNSUPPORTED, so a diagnosis that has never been audited cannot be mistaken
+    #: for one that passed. Fail-closed by construction rather than by the
+    #: caller remembering to check.
+    status: str = "UNSUPPORTED"
+
+    @field_validator("status")
+    @classmethod
+    def _known_status(cls, value: str) -> str:
+        if value not in ("SUPPORTED", "UNSUPPORTED"):
+            raise ValueError("status must be SUPPORTED or UNSUPPORTED, got %r" % value)
+        return value
+
+    @property
+    def falsifier_stated(self) -> bool:
+        """Whether the model actually answered the falsifiability question.
+
+        A three-word answer is not a falsifier, so the bar is a token count
+        rather than mere non-emptiness -- "unknown" and "n/a" are the shapes a
+        model reaches for when it has nothing.
+        """
+        return len(self.falsifiable_by.split()) >= 5
+
     @field_validator("diagnosis_class")
     @classmethod
     def _known_class(cls, value: str) -> str:

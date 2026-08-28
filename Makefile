@@ -1,4 +1,4 @@
-.PHONY: help demo demo-full demo-live test verify golden clean install
+.PHONY: help demo demo-full demo-live investigate investigate-live models test verify golden clean install
 
 PYTHON ?= python
 
@@ -19,6 +19,9 @@ help:
 	@echo "  make demo        200-event dev batch. No API key needed. Start here."
 	@echo "  make demo-full   6,000-event batch (sized from the PRD power calc)"
 	@echo "  make demo-live   re-run against live APIs and refresh the cache"
+	@echo "  make investigate      the LLM investigator, from the committed cache"
+	@echo "  make investigate-live the same, against a live model; refreshes the cache"
+	@echo "  make models      print the configured model IDs and verify they resolve"
 	@echo "  make test        the full test suite, including invariants I1/I2/I7"
 	@echo "  make verify      test + demo determinism check (I8)"
 	@echo "  make golden      regenerate the golden ledger. Read the diff."
@@ -33,10 +36,22 @@ demo:
 demo-full:
 	@PRAMAAN_LLM_OFFLINE=1 $(PYTHON) -m pramaan.cli demo --full
 
-# The only target permitted to touch the network. It rewrites fixtures/llm_cache,
-# so the diff it produces is the record of what a prompt change cost.
+# The investigator (Day 4). Runs from the committed cache and makes no network
+# call, like every other offline target.
+investigate:
+	@PRAMAAN_LLM_OFFLINE=1 $(PYTHON) -m pramaan.cli investigate
+
+# The two targets permitted to touch the network. They rewrite fixtures/llm_cache,
+# so the diff they produce is the record of what a prompt change cost.
 demo-live:
 	@PRAMAAN_LLM_OFFLINE=0 $(PYTHON) -m pramaan.cli demo --dev
+
+investigate-live:
+	@PRAMAAN_LLM_OFFLINE=0 $(PYTHON) -m pramaan.cli investigate
+
+# Costs no completion tokens: a GET against each provider's model list.
+models:
+	@$(PYTHON) -m pramaan.cli models
 
 test:
 	@PRAMAAN_LLM_OFFLINE=1 $(PYTHON) -m pytest tests -q

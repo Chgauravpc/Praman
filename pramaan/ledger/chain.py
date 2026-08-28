@@ -51,7 +51,25 @@ from pramaan.canonical import GENESIS_HASH, canonical_json, parse_iso, sha256_he
 #: answer key, not an observation, and the ledger is the artifact a reviewer is
 #: invited to audit. ADR-010 quarantines ground truth in its own table; keeping
 #: it out of the ledger is the same rule applied to the same risk.
-LEDGER_KINDS: Tuple[str, ...] = ("DETECT", "GATE", "OUTCOME", "EXCEPTION")
+LEDGER_KINDS: Tuple[str, ...] = (
+    "DETECT",
+    "GATE",
+    "OUTCOME",
+    "EXCEPTION",
+    # Day 4. Both arrive with a writer on the day they join the enum (ADR-011):
+    # ``cli.run_investigate`` appends a DIAGNOSIS for every investigation the
+    # detector opens, and a RECEIPT_AUDIT for every one of those, including the
+    # sessions that concluded nothing. Adding the kinds without the writers would
+    # make the enum a plan rather than a record of what the system emits.
+    #
+    # They are two rows rather than one because they are two different assertions
+    # by two different components, and a reviewer needs to be able to see them
+    # disagree. DIAGNOSIS is what the model said. RECEIPT_AUDIT is what survived a
+    # deterministic check of it. Collapsing them would erase the only evidence
+    # that the check does anything.
+    "DIAGNOSIS",
+    "RECEIPT_AUDIT",
+)
 
 #: Verdicts a GATE row may carry. Three, never two: AMEND is what the envelope
 #: returns when a step is substantively right and mechanically wrong, and

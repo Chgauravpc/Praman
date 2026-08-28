@@ -1198,6 +1198,263 @@ def _truncation_probe(conn: sqlite3.Connection, expected_rows: int) -> str:
     )
 
 
+# --------------------------------------------------------------------------
+# The investigator (Day 4)
+# --------------------------------------------------------------------------
+
+
+def _investigation_ts(day_index: int) -> str:
+    """An ISO timestamp for a day index, in IST.
+
+    A ledger row needs a timestamp and there is deliberately no ``now()``
+    anywhere in the write path (``config.py``'s first paragraph). So a DIAGNOSIS
+    row is stamped with the *start of the window it is about*, which is an event
+    time derived from the data. A wall-clock read here would make the ledger hash
+    depend on when the run happened and NFR-3 would be unsatisfiable.
+    """
+    from datetime import timedelta
+
+    epoch = canonical.parse_iso(SIM_EPOCH)
+    return canonical.to_iso(epoch + timedelta(days=int(day_index)))
+
+
+def run_investigate(seed: int, out_dir: Path, count: int, days: int) -> int:
+    """Detect incidents in a degraded batch, investigate each, audit the results.
+
+    The LLM-touched surface of the whole day, and it is small on purpose: one
+    investigation per incident (PRD 1.1 -- "a degradation episode spanning 400
+    failures has one root cause, and diagnosing it 400 times is not expensive, it
+    is wrong"). The batch is 1,200 events and contains one incident, so this is
+    one session, not 1,200.
+    """
+    from pramaan.investigate import receipts as receipts_mod
+    from pramaan.investigate.agent import (
+        detect_incidents,
+        investigate,
+        session_lines,
+    )
+    from pramaan.investigate.tools import ToolBelt, build_agent_db
+    from pramaan.llm.cache import CacheMiss
+    from pramaan.llm.client import LLMClient
+    from sim.generate import dev_batch_degraded
+    from sim.incident import DEV_INCIDENT, build_downtime, build_traffic
+
+    config = load_config()
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    events, truth = dev_batch_degraded(seed=seed, count=count, days=days)
+    traffic = build_traffic(events, seed, DEV_INCIDENT)
+    downtime = build_downtime(DEV_INCIDENT)
+
+    _section("INVESTIGATE -- an agent that writes its own queries")
+    print("  batch                %s events over %d days, seed %d"
+          % (_thousands(len(events)), days, seed))
+    print("  injected incident    %s" % truth.spec_name)
+    print("                       window days %d-%d, rate shift on %s, mix shift on %s"
+          % (truth.start_day, truth.end_day, truth.rate_segment, truth.mix_segment))
+    print("                       platform downtime declared: %s"
+          % ("yes" if truth.downtime_declared else "no"))
+    print()
+    print("  Ground truth is printed here for the reader, and is NOT reachable by")
+    print("  the agent: its SQL runs against a separate in-memory projection with")
+    print("  no latent table in it (pramaan/investigate/tools.py).")
+
+    # -- detection: arithmetic, zero tokens ------------------------------
+    probe_belt = ToolBelt(build_agent_db(events, traffic, downtime))
+    incidents = detect_incidents(probe_belt)
+
+    _section("DETECT -- deterministic, no LLM")
+    print("  incidents found      %d" % len(incidents))
+    for incident in incidents:
+        print("  %-20s blended %s -> %s  (%s)"
+              % (incident.label,
+                 investigate_fmt_rate(incident.blended_baseline),
+                 investigate_fmt_rate(incident.blended_window),
+                 investigate_fmt_pp(incident.delta)))
+    if not incidents:
+        print("  Nothing is elevated. With no incident there is nothing to")
+        print("  investigate, and no LLM call is made.")
+        return 0
+
+    # -- ledger ---------------------------------------------------------
+    db_path = out_dir / ("investigate-%d.db" % seed)
+    if db_path.exists():
+        db_path.unlink()
+    conn = connect(db_path)
+    ledger = Ledger(conn)
+
+    client = LLMClient(config)
+    sessions = []
+    audits = []
+
+    for incident in incidents:
+        belt = ToolBelt(build_agent_db(events, traffic, downtime))
+        try:
+            session = investigate(incident, belt, client)
+        except CacheMiss as exc:
+            _section("NO LLM KEY AND NO CACHED SESSION")
+            print("  The investigator needs either a live API key or a cached")
+            print("  session, and has neither.")
+            print()
+            print("  %s" % str(exc).splitlines()[0])
+            print()
+            print("  Set GROQ_API_KEY (or OPENROUTER_API_KEY) in .env and run")
+            print("    make investigate-live")
+            print("  once. That writes fixtures/llm_cache, after which this")
+            print("  command runs offline and free, forever.")
+            return 3
+        sessions.append(session)
+        audits.append(session.audit)
+
+        ts = _investigation_ts(min(incident.window))
+        ledger.append(
+            "DIAGNOSIS",
+            ts=ts,
+            payload=session.as_ledger_payload(),
+            llm_call_ids=[t.llm_call_id for t in session.turns],
+        )
+        ledger.append(
+            "RECEIPT_AUDIT",
+            ts=ts,
+            payload=session.audit.as_ledger_payload(),
+            decision=session.audit.status,
+        )
+    conn.commit()
+
+    for session in sessions:
+        _section("SESSION -- %s" % session.incident.label)
+        for line in session_lines(session):
+            print("  " + line)
+
+    # -- the headline metrics -------------------------------------------
+    summary = receipts_mod.coverage_of(audits)
+    _section("RECEIPTS -- the headline trust metric (PRD 8)")
+    print("  diagnoses            %d  (%d supported, %d unsupported)"
+          % (summary["diagnoses"], summary["supported"], summary["unsupported"]))
+    print("  claims made          %d" % summary["claims"])
+    print("  receipt coverage     %.1f%%   share of claims citing a tool call"
+          % (100.0 * summary["receipt_coverage"]))
+    print("  survival rate        %.1f%%   share surviving the audit"
+          % (100.0 * summary["survival_rate"]))
+    if summary["stripped_by_reason"]:
+        print("  stripped, by reason:")
+        for reason, n in summary["stripped_by_reason"].items():
+            print("    %-44s %d" % (reason, n))
+    else:
+        print("  stripped             0")
+    print()
+    print("  Coverage and survival are separate numbers and the gap between them")
+    print("  is the informative one. Coverage counts claims that cited something;")
+    print("  survival counts claims whose citation checked out. A model that")
+    print("  cites confidently and wrongly scores 100% on the first and less on")
+    print("  the second.")
+
+    _section("TOKENS AND CACHE")
+    stats = client.stats()
+    cache, tokens = stats["cache"], stats["tokens"]
+    total_turns = sum(len(s.turns) for s in sessions)
+    hits = sum(s.cache_hits for s in sessions)
+    print("  llm calls            %d over %d session(s)" % (total_turns, len(sessions)))
+    print("  cache hits           %d of %d  (%.1f%%)"
+          % (hits, total_turns, 100.0 * hits / total_turns if total_turns else 100.0))
+    print("  network calls        %d" % tokens["network_calls"])
+    print("  tokens consumed      %s" % _thousands(tokens["total_tokens"]))
+    print("  rate limited         %d   failovers %d"
+          % (tokens["rate_limited"], tokens["failovers"]))
+    if cache:
+        print("  cache entries        %s" % _thousands(cache.get("entries", 0) or 0))
+        if cache.get("lookups"):
+            print("  cache hit rate       %.1f%%" % (100.0 * cache.get("hit_rate", 0.0)))
+        if cache.get("memoisation_ratio"):
+            print("  memoisation ratio    %.1fx" % cache["memoisation_ratio"])
+    print()
+    print("  A second run of this command makes zero network calls and consumes")
+    print("  zero tokens: every turn prompt is a pure function of the incident,")
+    print("  the transcript so far and the turn number, so the cache keys repeat.")
+
+    _section("LEDGER")
+    verification = ledger.verify_chain()
+    print("  rows                 %s" % _thousands(ledger.count()))
+    for kind, n in ledger.kind_counts():
+        print("    %-18s %s" % (kind, _thousands(n)))
+    print("  verify_chain         %s" % ("PASS" if verification else "FAIL"))
+    export = ledger.export_jsonl(out_dir / ("investigate-%d.jsonl" % seed))
+    print("  exported             %s" % _display_path(export))
+
+    return 0 if all(a.is_supported for a in audits) else 0
+
+
+def investigate_fmt_rate(value: float) -> str:
+    from pramaan.investigate.tools import fmt_rate
+
+    return fmt_rate(value)
+
+
+def investigate_fmt_pp(value: float) -> str:
+    from pramaan.investigate.tools import fmt_pp
+
+    return fmt_pp(value)
+
+
+def _thousands(value: int) -> str:
+    return format(int(value), ",")
+
+
+def run_models() -> int:
+    """Report the configured model IDs, and verify them if a key is present.
+
+    Exists because of a real and slightly embarrassing finding on Day 4: the two
+    model IDs this project carried for three days had been shut down twelve days
+    earlier. A comment saying "verify these" is not a verification, and a
+    free-tier lineup changes without notice, so the check is a command.
+    """
+    from pramaan.llm.client import (
+        MODEL_SOURCES,
+        MODELS,
+        MODELS_VERIFIED_ON,
+        TIERS,
+    )
+
+    config = load_config()
+    client = LLMClient(config)
+
+    _section("MODELS -- what this project asks for")
+    print("  last verified        %s" % MODELS_VERIFIED_ON)
+    for tier in TIERS:
+        print("  %s:" % tier)
+        for index, (provider, model) in enumerate(MODELS[tier]):
+            role = "primary " if index == 0 else "failover"
+            print("    %s  %-12s %s" % (role, provider, model))
+    print()
+    for provider, url in sorted(MODEL_SOURCES.items()):
+        print("  %-12s %s" % (provider, url))
+
+    _section("VERIFICATION -- what the providers actually serve")
+    report = client.verify_models()
+    ok = True
+    for provider, entry in sorted(report["providers"].items()):
+        print("  %s: %s" % (provider, entry["status"]))
+        if "served_count" in entry:
+            print("    models served      %d" % entry["served_count"])
+            for model in entry.get("present", []):
+                print("    PRESENT            %s" % model)
+            for model in entry.get("missing", []):
+                ok = False
+                print("    MISSING            %s   <-- this ID does not resolve" % model)
+    print()
+    if all("no API key" in e["status"] for e in report["providers"].values()):
+        print("  No API keys are set, so nothing could be checked. Set GROQ_API_KEY")
+        print("  or OPENROUTER_API_KEY in .env and re-run. This command makes no")
+        print("  completion calls and consumes no tokens either way.")
+        return 0
+    if not ok:
+        print("  At least one configured model ID does not resolve. Fix MODELS in")
+        print("  pramaan/llm/client.py before running anything that costs tokens.")
+        return 1
+    print("  Every configured model ID resolves.")
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="pramaan", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -1222,11 +1479,43 @@ def main(argv: Sequence[str] | None = None) -> int:
     demo.add_argument("--out", type=Path, default=BUILD_DIR)
     demo.set_defaults(batch="dev")
 
+    investigate_cmd = sub.add_parser(
+        "investigate",
+        help="detect an incident in a degraded batch and diagnose it with an LLM agent",
+    )
+    investigate_cmd.add_argument("--seed", type=int, default=None)
+    investigate_cmd.add_argument("--out", type=Path, default=BUILD_DIR)
+    investigate_cmd.add_argument(
+        "--count",
+        type=int,
+        default=None,
+        help="events in the degraded batch. Larger costs no more tokens: the LLM "
+             "cost is one session per incident, and SQL is free.",
+    )
+    investigate_cmd.add_argument("--days", type=int, default=None)
+
+    sub.add_parser(
+        "models",
+        help="print the configured model IDs and verify them against each provider",
+    )
+
     args = parser.parse_args(argv)
+    if args.command == "models":
+        return run_models()
     if args.command == "demo":
         seed = args.seed if args.seed is not None else load_config().seed
         args.out.mkdir(parents=True, exist_ok=True)
         return run_demo(args.batch, seed, args.out)
+    if args.command == "investigate":
+        from sim.generate import INVESTIGATE_BATCH_DAYS, INVESTIGATE_BATCH_SIZE
+
+        seed = args.seed if args.seed is not None else load_config().seed
+        return run_investigate(
+            seed,
+            args.out,
+            args.count if args.count is not None else INVESTIGATE_BATCH_SIZE,
+            args.days if args.days is not None else INVESTIGATE_BATCH_DAYS,
+        )
     parser.error("unknown command")
     return 2
 

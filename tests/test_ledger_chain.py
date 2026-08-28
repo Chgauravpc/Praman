@@ -360,20 +360,35 @@ def test_a_gate_row_carries_its_verdict_and_its_rule_in_dedicated_columns():
 
 
 def test_an_unknown_ledger_kind_is_still_rejected(ledger):
-    """ADR-011 holds with four kinds as it did with one.
+    """ADR-011 holds with six kinds as it did with one.
 
     The pin is deliberately exact rather than a membership check. A kind joins
     the enum on the day its writer lands, so the set growing is a decision
     somebody made and should show up as a diff in this line -- ``in
     LEDGER_KINDS`` would let a kind be added with no writer and no reviewer.
+    This test failing on the day a kind is added is the mechanism working, not a
+    breakage.
 
     Day 3 added OUTCOME (one row per event per run) and EXCEPTION (written only
-    when an arm wanted to act and could not). PLAN is still absent because
-    nothing writes it until Day 5, which is what the second half of this test
-    asserts.
+    when an arm wanted to act and could not). Day 4 added DIAGNOSIS and
+    RECEIPT_AUDIT, both written by ``cli.run_investigate`` -- one per
+    investigation the detector opens, including the sessions that concluded
+    nothing, so a failed investigation appears in the record rather than
+    vanishing from it.
+
+    PLAN and ACTION are still absent because nothing writes them until Day 5,
+    which is what the second half of this test asserts.
     """
     from pramaan.ledger.chain import LEDGER_KINDS
 
-    assert LEDGER_KINDS == ("DETECT", "GATE", "OUTCOME", "EXCEPTION")
-    with pytest.raises(ValueError):
-        ledger.append("PLAN", ts=TS, payload={})
+    assert LEDGER_KINDS == (
+        "DETECT",
+        "GATE",
+        "OUTCOME",
+        "EXCEPTION",
+        "DIAGNOSIS",
+        "RECEIPT_AUDIT",
+    )
+    for unwritten in ("PLAN", "ACTION"):
+        with pytest.raises(ValueError):
+            ledger.append(unwritten, ts=TS, payload={})

@@ -147,11 +147,25 @@ the baseline the LLM has to beat from Day 5.
   each carrying a latent counterfactual
 - Canonical prompt construction, with the identifier screen and its invariant test
 
-**Not built yet:** the investigator, the planner, the executor, the four
-remaining adapters, the voice channel, and the estimator that produces the
-headline number. There are still no LLM calls in the pipeline — Days 1 and 2
-spend zero tokens on purpose, so neither the foundation nor the safety layer
-depends on a rate limit.
+Since then: the three-arm estimator that produces the headline number, and the
+**investigator** — an LLM agent with a read-only tool belt that writes its own
+SQL, plus the deterministic receipt auditor that strips any claim it cannot
+evidence.
+
+**Not built yet:** the planner, the executor, the four remaining adapters, the
+voice channel, and the canary. Arm C is present in every batch, holds its third
+of the events, and takes no action — its figures are withheld by design until it
+is wired, because an unwired arm's outcomes are identical to the control's and
+printing them would read as a finding about the LLM.
+
+**On the token count:** the pipeline still reports zero tokens consumed. Days 1–3
+spend nothing on purpose, so neither the foundation nor the safety layer depends
+on a rate limit. Day 4's investigator is built and tested end to end against a
+scripted model; the live run needs an API key and is the one thing outstanding.
+Two consequences worth being explicit about — the published receipt-coverage
+figure is currently measured against a scripted model rather than a real one, and
+`make investigate` stops with an actionable message rather than a number if no key
+is present.
 
 ### The envelope, and why it was built before the LLM
 
@@ -210,9 +224,26 @@ itself; it is not a measure of how many *ways* each rule can be violated.
 ```bash
 make demo        # 200-event dev batch, keyless, no network call
 make demo-full   # 6,000-event batch (sized from a power calculation)
-make test        # 329 tests, including the invariants below
+make investigate # the LLM investigator, from the committed cache
+make models      # print the configured model IDs and check they still resolve
+make test        # 438 tests, including the invariants below
 make verify      # tests, plus a byte-identical-output check across two runs
 ```
+
+`make models` exists because of a genuine and slightly embarrassing finding: the
+two model IDs this repo carried for its first three days had been switched off by
+the provider twelve days before anyone checked. Nothing caught it, because the
+project had a source comment reading *"verify these"* where it needed a command.
+A fact with an expiry date belongs in a query, not in a constant with a reminder
+attached — so the check is now one target, and it costs no tokens.
+
+`make investigate` runs the agent against a batch carrying one **injected**
+degradation, and the interesting part is that the incident is deliberately
+ambiguous. The blended failure rate rises 7.3 points, and that splits into 3.8
+points of real rate shift on one segment and 3.5 points of traffic mix toward a
+segment that always failed more, with nothing broken in it. An agent that reports
+the blended figure has failed. The decomposition tool returns arithmetic the agent
+cannot fudge, and its three terms sum to the observed change exactly.
 
 `make demo` prints the ingest result, the envelope's verdict on every event with
 the rule each one cited, the ledger head hash, a live tamper demonstration, the
@@ -298,14 +329,45 @@ pramaan/
 │   │   ├── tiers.py       T0–T4 reversibility and the gates each one clears
 │   │   ├── stopping.py    S1–S7 as independent predicates
 │   │   └── judge.py       the evaluation order, and why that order matters
+│   ├── investigate/
+│   │   ├── tools.py       the read-only tool belt, over a projection of the store
+│   │   ├── receipts.py    the receipt auditor — deterministic, and no LLM in it
+│   │   └── agent.py       the loop: 8 turns, a token ceiling, and the detector
+│   ├── eval/            arms, outcome resolution, BCa intervals, metrics
 │   ├── sense/           RiskEvent, the event store
 │   ├── ledger/          the hash chain
 │   └── llm/             client, cache, prompt construction
-├── sim/                 seeded generator + latent ground truth
+├── sim/
+│   ├── generate.py      seeded generator + latent ground truth
+│   ├── latent.py        the capability/intent world model
+│   ├── outcomes.py      the outcome oracle
+│   └── incident.py      the injected degradation, and the attempt denominators
 ├── tests/
 ├── fixtures/llm_cache/  committed — what makes the demo keyless
 └── DECISIONS.md
 ```
+
+### The one design decision worth reading
+
+The investigator's SQL runs against a **separate in-memory database** holding a
+banded projection of the events — not against the event store. Two guarantees fall
+out of the same construction.
+
+The simulator's ground truth (*would this customer have paid anyway? do they still
+want to?*) lives in its own table, and that table is not in the database the agent
+queries. So it is not merely un-joined; it is absent. An agent that could read
+`has_intent` would know which customers will respond before contacting any of
+them, which is not a diagnosis, it is the answer key with extra steps. A denylist
+of table names was the cheap version, and it would have been one creative spelling
+from failing open.
+
+And because the projection carries no identifier, no timestamp and no rupee
+figure, tool output is safe to put in a prompt *by construction*. That matters
+because the alternative was tempting and wrong: a multi-turn agent has to feed
+results back into its own prompt, and the easy fix is to relax the screen that
+keeps high-cardinality strings out. Doing that costs nothing visible and destroys
+the response cache, which takes the token budget from roughly 800K to 15M without
+anything failing. The screen stayed strict; the data changed.
 
 ## Limitations, stated up front
 
