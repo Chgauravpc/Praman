@@ -1,0 +1,20 @@
+{
+  "key": "57d02f5f61bc0a9f1b36529332699a7237c85e736d451b09cbb316ae1f2af9e5",
+  "model": "openai/gpt-oss-20b",
+  "params": {
+    "max_tokens": 900,
+    "schema": {
+      "type": "object"
+    },
+    "temperature": 0.0
+  },
+  "prompt": "You are the recovery planner for an Indian payments platform. A payment has failed and you must compose a bounded recovery plan.\n\nYou are given a canonical situation, not a specific transaction. The plan you write will be reused for every future case matching this same situation, so reason about the class of case, never about an individual customer.\n\nAction space, with reversibility tier:\n- ACT_WAIT (T0)            do nothing yet; the payer is likely retrying already\n- ACT_ROUTE (T0)           change routing or switch rail\n- ACT_RETRY (T1)           re-attempt the charge; reversible\n- ACT_MESSAGE (T2)         SMS, WhatsApp, email or in-app; NOT reversible\n- ACT_VOICE (T3)           outbound voice call; the least reversible contact\n- ACT_CONCESSION (T4)      discount or waiver; needs human approval\n- ACT_ALERT_MERCHANT (T0)  the merchant's own configuration is at fault\n- ACT_PAGE_ENGINEER (T0)   the merchant's integration is at fault\n- ACT_ESCALATE_HUMAN (T4)  hand to a person\n- ACT_STOP                 terminate the thread\n\nHold on to the asymmetry: a charge retry is refundable, a message is not, and a phone call really is not. Gate contact harder than you gate retries.\n\nConstraints you must respect:\n- channel_eligibility is authoritative. silent_only means no customer contact of any kind. silent_and_message forbids voice.\n- Step timing is a delay in seconds measured from the moment the case becomes actionable. Never an absolute time.\n- Every step names the stop conditions that abort it.\n- If the right first action is to do nothing, say so. Waiting is a real action here, not a failure to plan.\n\nReason-class guardrail for this situation:\n- retry: never\n- customer contact: prohibited\n- S1 -- terminate the entire thread. The tripwire against chasing someone who has already paid, and the single most important rule in the system.\n\nSituation:\n- reason_class: ALREADY_PAID\n- diagnosis_class: undiagnosed\n- amount_band: 1 (0-500)\n- segment: tier3\n- legal_context: service\n- channel_eligibility: silent_only\n- hour_bucket: night\n\nReply with a single JSON object:\n{\"steps\": [{\"step_index\": 0, \"action\": \"...\", \"channel\": \"...\", \"delay_seconds\": 0, \"expected_value_paise\": 0, \"cost_paise\": 0, \"stop_conditions\": [\"...\"], \"rationale\": \"...\"}], \"expected_value_paise\": 0, \"rationale\": \"...\"}\n",
+  "provider": "groq",
+  "response": "{\"steps\":[{\"step_index\":0,\"action\":\"ACT_STOP\",\"channel\":\"internal\",\"delay_seconds\":0,\"expected_value_paise\":0,\"cost_paise\":0,\"stop_conditions\":[\"S1: already_paid\"],\"rationale\":\"Transaction already paid; channel prohibits customer contact; rule S1 mandates termination.\"}],\"expected_value_paise\":0,\"rationale\":\"Terminate thread immediately due to ALREADY_PAID reason_class and silent_only channel eligibility.\"}",
+  "tier": "fast",
+  "usage": {
+    "completion_tokens": 838,
+    "prompt_tokens": 651,
+    "total_tokens": 1489
+  }
+}

@@ -197,26 +197,49 @@ def test_arm_c_can_now_be_contrasted():
     assert contrast.intervals["rate"].method in ("BCa", "percentile")
 
 
-def test_arm_c_fallback_matches_arm_b_exactly_with_no_llm():
+def _isolated_offline_planner(tmp_path):
+    """A ``Planner`` guaranteed to see no cached response, ever.
+
+    Deliberately not the module-level default planner: as of Day 5 evening,
+    ``fixtures/llm_cache/`` holds real live responses for a real subset of
+    the dev batch's signatures (the first live planning pass -- see
+    STATE.md), and ``LLMClient`` checks the cache before checking the offline
+    flag. So a test asking "what does NFR-2's pure fallback path do" has to
+    build its own client against an empty cache directory, or it would
+    silently start exercising live-cached plans the day the cache grew and
+    look like it was still testing the fallback.
+    """
+    from pramaan.config import Config
+    from pramaan.llm.client import LLMClient
+    from pramaan.plan.planner import Planner
+
+    config = Config(seed=42, mode="shadow", llm_offline=True)
+    return Planner(LLMClient(config, cache_dir=tmp_path / "empty_llm_cache"))
+
+
+def test_arm_c_fallback_matches_arm_b_exactly_with_no_llm(tmp_path):
     """NFR-2: with no cached or live planner response, arm C IS arm B's table.
 
     This is the fact the shadow-mode report leans on to explain why an
     estimated C-B contrast can be non-zero even though the true effect is
-    exactly zero: with no LLM key, ``Planner._build`` falls back to
-    ``default_plan_for``, which is deliberately the same lookup table
-    ``arm_step("B", ...)`` reads. Checked here as a per-event equality over
-    the whole batch, and again as an exact zero true effect in
-    ``test_arm_c_true_effect_against_b_is_zero_with_no_llm`` below -- two
-    different ways of saying the same thing, because a bug that broke one
-    might not break the other.
+    exactly zero: with nothing cached and no live call permitted,
+    ``Planner._build`` falls back to ``default_plan_for``, which is
+    deliberately the same lookup table ``arm_step("B", ...)`` reads. Checked
+    here as a per-event equality over the whole batch, and again as an exact
+    zero true effect in ``test_arm_c_true_effect_against_b_is_zero_with_no_llm``
+    below -- two different ways of saying the same thing, because a bug that
+    broke one might not break the other.
     """
+    planner = _isolated_offline_planner(tmp_path)
     for event in sim.dev_batch(42):
         b = arms.arm_step("B", event)
-        c = arms.arm_step("C", event)
+        c = arms.arm_step("C", event, planner=planner)
         assert (c.action, c.channel, c.delay_seconds) == (b.action, b.channel, b.delay_seconds)
+    assert planner.stats.llm_built == 0
+    assert planner.stats.fallback_built == planner.stats.distinct_signatures
 
 
-def test_arm_c_true_effect_against_b_is_zero_with_no_llm():
+def test_arm_c_true_effect_against_b_is_zero_with_no_llm(tmp_path):
     """PRD 8.2's estimator-validation move, applied to the C-B ablation.
 
     With arm C's policy identical to arm B's for every event (the case above),
@@ -228,8 +251,9 @@ def test_arm_c_true_effect_against_b_is_zero_with_no_llm():
     """
     from pramaan.eval.resolve import potential_outcomes, true_effect
 
+    planner = _isolated_offline_planner(tmp_path)
     events = sim.dev_batch(42)
-    truth = true_effect(potential_outcomes(events, "B", "C"))
+    truth = true_effect(potential_outcomes(events, "B", "C", planner=planner))
     assert truth["rate"] == 0.0
     assert truth["value_share"] == 0.0
     assert truth["money_per_event"] == 0.0

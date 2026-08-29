@@ -364,18 +364,31 @@ def shadow_mode_report(
     lines.append("  %-24s %.1fx" % ("memoisation ratio", stats["memoisation_ratio"]))
     lines.append("  %-24s %s" % ("built from an LLM reply", format(stats["llm_built"], ",")))
     lines.append(
-        "  %-24s %s" % ("NFR-2 deterministic fallback", format(stats["fallback_built"], ","))
+        "  %-24s %s" % ("NFR-2 fallback, no key/cache", format(stats["fallback_built"], ","))
+    )
+    lines.append(
+        "  %-24s %s"
+        % ("NFR-2 fallback, provider wall", format(stats["provider_failures"], ","))
     )
     lines.append("  %-24s %s" % ("unreadable LLM replies", format(stats["parse_failures"], ",")))
-    if stats["llm_built"] == 0 and stats["fallback_built"] > 0:
+    total_fallback = stats["fallback_built"] + stats["provider_failures"]
+    if stats["llm_built"] == 0 and total_fallback > 0:
         lines.append("")
         lines.append(
-            "  Every plan on this run came from the NFR-2 fallback: no cached "
-            "or live planner response exists for any signature here, so arm C "
-            "is currently the SAME lookup table arm B uses, applied through "
-            "the same envelope -- confirmed above by the exact TRUE C-B "
-            "effect reading 0.00pp. See STATE.md for what is blocked on an "
-            "API key."
+            "  Every plan on this run came from an NFR-2 fallback: no usable "
+            "planner response exists for any signature here, so arm C is "
+            "currently the SAME lookup table arm B uses, applied through the "
+            "same envelope -- confirmed above by the exact TRUE C-B effect "
+            "reading 0.00pp. See STATE.md for what is blocked on an API key."
+        )
+    elif stats["provider_failures"] > 0:
+        lines.append("")
+        lines.append(
+            "  %d signature(s) hit a provider wall (rate limit or timeout) "
+            "after a network call was attempted, and fell back rather than "
+            "crashing the run (NFR-2). Re-run later to give those signatures "
+            "another attempt -- nothing about this run's other numbers is "
+            "invalidated by it." % stats["provider_failures"]
         )
     return "\n".join(lines)
 

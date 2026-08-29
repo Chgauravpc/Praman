@@ -35,10 +35,22 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
 from pramaan import canonical, taxonomy
-from pramaan.envelope.reason_map import MIN_SCHEDULED_RETRY_DELAY_SECONDS
+from pramaan.envelope.reason_map import CONTACT_ACTIONS, MIN_SCHEDULED_RETRY_DELAY_SECONDS
 from pramaan.llm.cache import CacheMiss
 from pramaan.llm.prompts import build_planner_prompt
 from pramaan.schemas import PlanStep, RecoveryPlan
+
+#: Synonyms found live, the hard way (FAILURES.md Day 5): a model asked for a
+#: channel on a *contact* action sometimes reaches for a near-miss spelling
+#: rather than the exact closed vocabulary. Lower-cased before lookup, so
+#: case variants ("SMS") are covered by the same one entry.
+_CHANNEL_ALIASES: Dict[str, str] = {
+    "whatsapp business": "whatsapp",
+    "whatsapp_business": "whatsapp",
+    "in-app": "in_app",
+    "inapp": "in_app",
+    "app": "in_app",
+}
 
 #: Mirrors ``pramaan.eval.arms.DEFAULT_CHANNEL``. Duplicated rather than
 #: imported: ``pramaan.eval`` will come to import *this* module (arm C dispatch
@@ -119,27 +131,45 @@ class PlanParseError(ValueError):
 def _coerce_step(raw: Any, index: int) -> Optional[PlanStep]:
     """One step, tolerantly. ``None`` if nothing usable survives.
 
-    Tolerant where tolerance is harmless (an unknown stop condition is passed
-    through as free text; a missing rationale becomes empty) and strict where
-    it is not (an action outside ``canonical.ACTIONS`` or a channel outside
-    ``schemas.Channel`` cannot be silently substituted, because that would be
-    inventing what the model said rather than reading it). ``step_index`` is
-    always the caller's own dense count of *surviving* steps, never whatever
-    the model wrote: a model that emits steps out of order, with gaps, or with
-    one unreadable step among readable ones would otherwise leave the kept
-    steps out of order or with a hole at position zero, neither of which says
-    anything about the plan's substance.
+    Tolerant where tolerance is harmless and strict where it is not. Strict:
+    an action outside ``canonical.ACTIONS`` cannot be silently substituted,
+    because that would be inventing what the model said rather than reading
+    it. Tolerant, and found live rather than guessed at: a model asked for a
+    ``channel`` on an action that never reaches a customer (a silent retry,
+    an internal alert, a wait) reliably reaches for a *descriptive* word
+    instead of the schema's "no channel" value -- ``silent``, ``internal``,
+    ``merchant``, ``engineer`` were all observed in one dev-batch live run.
+    The envelope never reads ``channel`` for a non-contact action, so the
+    word is harmless and forcing it to ``"none"`` is reading past a synonym,
+    not inventing a fact. For an action that genuinely IS a contact
+    (``CONTACT_ACTIONS``), the channel is load-bearing and only a small,
+    named set of near-miss spellings is normalised (``_CHANNEL_ALIASES``) --
+    anything else still fails validation and drops the step, because a
+    contact channel the envelope cannot recognise is a real defect, not a
+    spelling variant.
+
+    ``step_index`` is always the caller's own dense count of *surviving*
+    steps, never whatever the model wrote: a model that emits steps out of
+    order, with gaps, or with one unreadable step among readable ones would
+    otherwise leave the kept steps out of order or with a hole at position
+    zero, neither of which says anything about the plan's substance.
     """
     if not isinstance(raw, dict):
         return None
     stop_conditions = raw.get("stop_conditions") or []
     if isinstance(stop_conditions, str):
         stop_conditions = [stop_conditions]
+    action = str(raw.get("action", ""))
+    if action in CONTACT_ACTIONS:
+        channel_raw = str(raw.get("channel", "") or "").strip().lower()
+        channel = _CHANNEL_ALIASES.get(channel_raw, channel_raw)
+    else:
+        channel = "none"
     try:
         return PlanStep(
             step_index=index,
-            action=str(raw.get("action", "")),
-            channel=str(raw.get("channel", "none") or "none"),
+            action=action,
+            channel=channel,
             delay_seconds=max(0, int(raw.get("delay_seconds", 0) or 0)),
             expected_value_paise=max(0, int(raw.get("expected_value_paise", 0) or 0)),
             cost_paise=max(0, int(raw.get("cost_paise", 0) or 0)),
@@ -210,14 +240,27 @@ class PlannerStats:
     cache_hits: int = 0
     #: Genuinely built from a parsed LLM response (cached or live).
     llm_built: int = 0
-    #: NFR-2: no LLM response was available at all.
+    #: NFR-2, the true cache miss: no key, nothing cached, no network call
+    #: even attempted.
     fallback_built: int = 0
+    #: NFR-2's other case, found live: every provider for this tier failed
+    #: (rate-limited, timed out, or errored) after a network call *was*
+    #: attempted. Kept separate from ``fallback_built`` because the two say
+    #: different things about the run -- a high ``fallback_built`` with a
+    #: key present would be suspicious; a high ``provider_failures`` says the
+    #: free-tier wall was hit, which is an expected, budgeted event.
+    provider_failures: int = 0
     #: The LLM answered but the reply could not be coerced into a plan.
     parse_failures: int = 0
 
     @property
     def distinct_signatures(self) -> int:
-        return self.llm_built + self.fallback_built + self.parse_failures
+        return (
+            self.llm_built
+            + self.fallback_built
+            + self.provider_failures
+            + self.parse_failures
+        )
 
     @property
     def memoisation_ratio(self) -> float:
@@ -238,6 +281,7 @@ class PlannerStats:
             "distinct_signatures": self.distinct_signatures,
             "llm_built": self.llm_built,
             "fallback_built": self.fallback_built,
+            "provider_failures": self.provider_failures,
             "parse_failures": self.parse_failures,
             "memoisation_ratio": round(self.memoisation_ratio, 1),
         }
@@ -309,6 +353,23 @@ class Planner:
             )
         except CacheMiss:
             self.stats.fallback_built += 1
+            return default_plan_for(features)
+        except Exception:  # noqa: BLE001 -- any live-call fault degrades, never crashes
+            # NFR-2 says a cache MISS must never block the first action. A free
+            # tier's rate-limit wall is the same situation with a different
+            # cause: no LLM answer is available for this signature right now.
+            # Found live, on a real run, the hard way (FAILURES.md Day 5) --
+            # ``llm.client._call_live`` raises a plain ``RuntimeError`` once
+            # every candidate provider has failed over from consecutive 429s,
+            # and the first version of this method only caught ``CacheMiss``,
+            # so a rate-limit wall crashed the whole batch instead of falling
+            # back for the one signature that hit it. Like the CacheMiss
+            # fallback, this result is still cached by ``plan_for`` for the
+            # rest of this Planner's lifetime -- a rate-limit wall does not
+            # usually clear within one run, so retrying the same signature
+            # immediately would just fail again; a fresh ``Planner`` (the
+            # next run) gets a fresh attempt.
+            self.stats.provider_failures += 1
             return default_plan_for(features)
 
         try:

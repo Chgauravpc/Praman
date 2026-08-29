@@ -141,6 +141,30 @@ def test_a_true_cache_miss_falls_back_to_the_deterministic_default():
     assert planner.stats.llm_built == 0
 
 
+def test_a_provider_failure_after_a_live_attempt_also_falls_back():
+    """FAILURES.md, Day 5: found live, the hard way.
+
+    ``llm.client._call_live`` raises a plain ``RuntimeError`` once every
+    candidate provider has failed over from consecutive 429s -- a real,
+    budgeted event on a free tier, not a bug. The first version of
+    ``Planner._build`` only caught ``CacheMiss`` and this crashed the whole
+    batch instead of degrading for the one signature that hit the wall.
+    """
+
+    class _WalledClient:
+        def call(self, *args, **kwargs):
+            raise RuntimeError("every provider for tier fast failed; last error: ...")
+
+    planner = Planner(_WalledClient())
+    plan = planner.plan_for(FEATURES)
+
+    assert plan.steps[0].action == "ACT_MESSAGE"  # the same NFR-2 fallback
+    assert planner.stats.provider_failures == 1
+    assert planner.stats.fallback_built == 0  # a different counter -- see the stat docstring
+    assert planner.stats.llm_built == 0
+    assert planner.stats.distinct_signatures == 1
+
+
 def test_default_plan_for_matches_arm_bs_own_policy():
     """The fallback must be arm B's table, not a second, drifting copy of it.
 
