@@ -32,9 +32,8 @@ from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple
 
 from pramaan.canonical import GENESIS_HASH, canonical_json, parse_iso, sha256_hex
 
-#: Kinds emitted as of Day 3. Grows one entry at a time, on the day the writer
-#: lands. Still planned, in the order the days add them: DIAGNOSIS and
-#: RECEIPT_AUDIT (Day 4), PLAN and ACTION (Day 5), CONVERSE and PROMISE
+#: Kinds emitted as of Day 5. Grows one entry at a time, on the day the writer
+#: lands. Still planned, in the order the days add them: CONVERSE and PROMISE
 #: (Day 6/7).
 #:
 #: GATE joined on Day 2 and OUTCOME/EXCEPTION on Day 3, each with a real writer
@@ -69,6 +68,17 @@ LEDGER_KINDS: Tuple[str, ...] = (
     # that the check does anything.
     "DIAGNOSIS",
     "RECEIPT_AUDIT",
+    # Day 5. ``PLAN`` is one row per DISTINCT signature a ``Planner`` builds --
+    # not one per event, because a plan is memoised and the ledger should say
+    # so rather than implying the planner reasoned once per event. Written by
+    # ``pramaan.execute.runner.run_shadow``, from ``Planner.newly_built``.
+    # ``ACTION`` is one row per real call actually made against Razorpay TEST
+    # mode -- distinct from ``OUTCOME``, which records a *simulated* payment
+    # resolution for every arm. Written by
+    # ``pramaan.execute.runner.run_execute``, and only when a real API call
+    # was attempted.
+    "PLAN",
+    "ACTION",
 )
 
 #: Verdicts a GATE row may carry. Three, never two: AMEND is what the envelope

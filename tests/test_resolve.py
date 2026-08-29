@@ -361,6 +361,39 @@ def test_settle_delay_does_not_stack_with_the_scheduled_retry(events):
 # --------------------------------------------------------------------------
 
 
+#: Day 5's one, deliberate exception to the rule below. Arm C IS the
+#: LLM-planned arm (PRD 6.4) -- proposing its step means calling
+#: ``pramaan.plan.planner.Planner``, which needs ``pramaan.llm.client``, so
+#: ``pramaan.eval.arms`` now has a real and necessary edge into the LLM
+#: package. What must still never happen is that edge firing merely by
+#: *importing* the module, or by *computing the Day 3 headline* (B against A,
+#: neither of which ever asks for a planner) -- both of which are exactly the
+#: failure this test exists to catch. So the import is confined to the body of
+#: one function, ``_default_planner``, called only when arm C's step is
+#: requested with no explicit ``Planner`` already in hand, and this allowlist
+#: names that function specifically rather than exempting the whole file.
+_ALLOWED_LAZY_LLM_IMPORT = {
+    ("pramaan/eval/arms.py", "pramaan.llm.client", "_default_planner"),
+}
+
+
+def _enclosing_function(tree, node) -> "str | None":
+    """The name of the ``def`` whose body directly contains ``node``, if any.
+
+    Line-range containment rather than a parent-pointer walk: cheap, and
+    exact enough for a check with one allowlisted function in one file.
+    """
+    import ast
+
+    best = None
+    for candidate in ast.walk(tree):
+        if not isinstance(candidate, ast.FunctionDef):
+            continue
+        if candidate.lineno <= node.lineno <= getattr(candidate, "end_lineno", candidate.lineno):
+            best = candidate.name  # innermost enclosing wins; walk order is outer-first
+    return best
+
+
 def test_the_eval_layer_has_no_import_edge_into_the_llm_package():
     """Day 3's whole premise: the headline number cannot be blocked by a rate limit.
 
@@ -368,6 +401,10 @@ def test_the_eval_layer_has_no_import_edge_into_the_llm_package():
     same method -- **parsing imports rather than grepping for a string**, because a
     grep is defeated by a line break and by any indirection, and a component
     claiming "no LLM in here" should be checkable by reading its imports.
+
+    Day 5 narrows what "no LLM in here" means for exactly one file -- see
+    ``_ALLOWED_LAZY_LLM_IMPORT`` above -- and keeps it absolute for every other
+    module in the measurement layer.
     """
     import ast
     import pathlib
@@ -388,13 +425,46 @@ def test_the_eval_layer_has_no_import_edge_into_the_llm_package():
             elif isinstance(node, ast.ImportFrom) and node.module:
                 modules = [node.module]
             for module in modules:
-                if "llm" in module.split("."):
-                    offending.append("%s -> %s" % (path, module))
+                if "llm" not in module.split("."):
+                    continue
+                enclosing = _enclosing_function(tree, node)
+                key = (path.as_posix(), module, enclosing)
+                if key in _ALLOWED_LAZY_LLM_IMPORT:
+                    continue
+                offending.append(
+                    "%s -> %s (in %s)" % (path, module, enclosing or "module level")
+                )
     assert not offending, (
         "the measurement layer imports the LLM package: %r. Day 3 exists so that "
         "the headline number is produced with zero LLM calls; an import edge here "
-        "is how that stops being true." % offending
+        "is how that stops being true, unless it is the one allowlisted, lazy "
+        "exception arm C needs." % offending
     )
+
+
+def test_the_llm_import_in_arms_py_is_confined_to_its_one_lazy_function():
+    """The allowlist above is a name and a file, not a blank cheque.
+
+    If ``_default_planner`` is ever renamed, inlined, or a second, unrelated
+    LLM import is added to ``arms.py``, this fails loudly rather than the
+    allowlist silently covering something nobody reviewed.
+    """
+    import ast
+    import pathlib
+
+    path = pathlib.Path("pramaan/eval/arms.py")
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    llm_imports = []
+    for node in ast.walk(tree):
+        modules = []
+        if isinstance(node, ast.Import):
+            modules = [alias.name for alias in node.names]
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            modules = [node.module]
+        for module in modules:
+            if "llm" in module.split("."):
+                llm_imports.append((module, _enclosing_function(tree, node)))
+    assert llm_imports == [("pramaan.llm.client", "_default_planner")], llm_imports
 
 
 def test_importing_the_eval_layer_does_not_load_the_llm_package():
@@ -404,6 +474,11 @@ def test_importing_the_eval_layer_does_not_load_the_llm_package():
     module in the chain pulls the LLM package in indirectly -- which would mean a
     missing API key could break the measurement layer at import time even though
     nothing in it calls a model.
+
+    Still meaningful after Day 5's allowlisted edge in ``arms.py``: that import
+    is confined to ``_default_planner``'s body, so merely importing
+    ``pramaan.eval`` must not load ``pramaan.llm`` -- this test is what checks
+    that the confinement actually holds at runtime, not only in the AST.
     """
     import subprocess
     import sys

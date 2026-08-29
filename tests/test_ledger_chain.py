@@ -359,8 +359,8 @@ def test_a_gate_row_carries_its_verdict_and_its_rule_in_dedicated_columns():
     conn.close()
 
 
-def test_an_unknown_ledger_kind_is_still_rejected(ledger):
-    """ADR-011 holds with six kinds as it did with one.
+def test_the_ledger_kind_enum_grows_one_writer_at_a_time(ledger):
+    """ADR-011 holds with eight kinds as it did with one.
 
     The pin is deliberately exact rather than a membership check. A kind joins
     the enum on the day its writer lands, so the set growing is a decision
@@ -376,8 +376,12 @@ def test_an_unknown_ledger_kind_is_still_rejected(ledger):
     nothing, so a failed investigation appears in the record rather than
     vanishing from it.
 
-    PLAN and ACTION are still absent because nothing writes them until Day 5,
-    which is what the second half of this test asserts.
+    Day 5 added PLAN and ACTION, each with a real writer landing in the same
+    commit (ADR-011): ``pramaan.execute.runner.run_shadow`` writes one PLAN
+    row per DISTINCT signature a ``Planner`` builds (``Planner.newly_built``),
+    and ``run_execute`` writes one ACTION row per real call actually made
+    against Razorpay TEST mode. Both are accepted now, which is what the
+    second half of this test asserts.
     """
     from pramaan.ledger.chain import LEDGER_KINDS
 
@@ -388,7 +392,10 @@ def test_an_unknown_ledger_kind_is_still_rejected(ledger):
         "EXCEPTION",
         "DIAGNOSIS",
         "RECEIPT_AUDIT",
+        "PLAN",
+        "ACTION",
     )
-    for unwritten in ("PLAN", "ACTION"):
-        with pytest.raises(ValueError):
-            ledger.append(unwritten, ts=TS, payload={})
+    for writable in ("PLAN", "ACTION"):
+        row = ledger.append(writable, ts=TS, payload={})
+        assert row.kind == writable
+    assert ledger.verify_chain().ok

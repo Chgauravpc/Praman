@@ -52,10 +52,10 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from random import Random
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from pramaan import canonical, taxonomy
-from pramaan.envelope import Step
+from pramaan.envelope import EnvelopeContext, Step
 from pramaan.envelope.reason_map import MIN_SCHEDULED_RETRY_DELAY_SECONDS
 from pramaan.sense.models import RiskEvent
 
@@ -91,6 +91,84 @@ class ArmAssigner:
             self.rng.shuffle(block)
             self._blocks[stratum] = block
         return block.pop()
+
+
+# --------------------------------------------------------------------------
+# Envelope input -- shared by cli.gate_events, eval.resolve and arm C's own
+# planner-envelope pass
+# --------------------------------------------------------------------------
+#
+# Moved here from eval/resolve.py on Day 5, with its values unchanged
+# (test_ledger_chain.py's pinned GATE rows are unaffected). It has to live
+# somewhere lower in the import graph than resolve.py once arm C needs it:
+# arm_step below builds an EnvelopeContext to judge the plan's proposed first
+# step against, and resolve.py already imports arm_step from this module -- so
+# arm_step needing something from resolve.py would be a cycle. Moving the
+# single shared definition down here, with resolve.py importing it back, is
+# what keeps the dependency one-directional.
+
+#: What the harness assumes about the *sending infrastructure*, as distinct
+#: from the event. A DLT template, a scripted AI disclosure and a scripted
+#: self-identification are properties of a correctly-built sender, not
+#: properties of a failed payment -- so assuming them is what makes a pass
+#: measure the envelope's and the planner's judgement about timing, taxonomy
+#: and tiers rather than measuring the fact that there is no channel plumbing
+#: yet.
+#:
+#: A named constant, and printed in the output, because an assumption that
+#: moves a headline count belongs on screen rather than in a comment.
+SHADOW_SENDER_ASSUMPTIONS = dict(
+    consent="implied",
+    dlt_template_id="1207shadow",
+    ai_disclosure_scripted=True,
+    self_identification_scripted=True,
+)
+
+
+def envelope_context(event: RiskEvent) -> EnvelopeContext:
+    """Build the envelope's input from an event. Event time only, no clock."""
+    return EnvelopeContext(
+        at=event.detected_at,
+        legal_context=event.legal_context,
+        source_type=event.source_type,
+        reason_code=event.cause_signal,
+        amount_paise=event.amount_at_risk_paise,
+        counterparty_id=event.counterparty.id,
+        merchant_id="acct_shadow",
+        **SHADOW_SENDER_ASSUMPTIONS
+    )
+
+
+# --------------------------------------------------------------------------
+# Arm C -- the planner. A lazily-built, run-lifetime default instance
+# --------------------------------------------------------------------------
+#
+# One ``Planner`` per run, not one per event: the whole point of signature
+# memoisation (PRD 9.1, BUILD-PLAN 1.7) is that a plan is built once per
+# distinct signature and reused for every event that shares it. A fresh
+# ``Planner`` per call to ``arm_step`` would rebuild -- or re-fall-back-to-
+# default -- every single time, which defeats the cache before it does
+# anything. ``arm_step`` accepts an explicit ``planner`` for a caller that
+# wants its own instance (so it can read ``planner.stats`` and
+# ``planner.newly_built`` afterwards, which is how ``pramaan.execute.runner``
+# gets the numbers for its shadow-mode report); the module-level default below
+# exists so that every *other* caller -- ``cli.py``'s sensitivity sweeps,
+# ``metrics.py``'s window sweep, anything that touches arm C without asking
+# for its own planner -- still gets memoisation rather than silently paying
+# for a fresh LLM round-trip on every call.
+
+_DEFAULT_PLANNER: Optional[Any] = None
+
+
+def _default_planner() -> Any:
+    global _DEFAULT_PLANNER
+    if _DEFAULT_PLANNER is None:
+        from pramaan.config import load_config
+        from pramaan.llm.client import LLMClient
+        from pramaan.plan.planner import Planner
+
+        _DEFAULT_PLANNER = Planner(LLMClient(load_config()))
+    return _DEFAULT_PLANNER
 
 
 # --------------------------------------------------------------------------
@@ -141,13 +219,17 @@ ARM_POLICIES: Dict[str, ArmPolicy] = {
     ),
     "C": ArmPolicy(
         arm="C",
-        label="llm-planned -- investigator -> planner -> envelope",
-        wired=False,
-        acts=False,
+        label="llm-planned -- planner -> envelope",
+        wired=True,
+        acts=True,
         note=(
-            "Present and empty. Wired on Day 5. Takes no action today, so its "
-            "outcomes would be identical to arm A's -- which is exactly why "
-            "metrics.py withholds its figures instead of printing them."
+            "Day 5: pramaan.plan.planner builds a RecoveryPlan per signature "
+            "(memoised), and its first step is proposed exactly like arm B's "
+            "action -- judged by the same envelope, subject to the same "
+            "amend/reject verdicts. diagnosis_class stays 'undiagnosed' here: "
+            "the investigator (Day 4) runs once per detected *incident*, not "
+            "once per ordinary event, so an event with no incident open sees "
+            "the same 'undiagnosed' value arm B's world always has."
         ),
     ),
 }
@@ -158,8 +240,30 @@ WIRED_ARMS: Tuple[str, ...] = tuple(
 )
 
 
-def arm_step(arm: str, event: RiskEvent) -> Optional[Step]:
+def arm_step(
+    arm: str, event: RiskEvent, *, planner: Optional[Any] = None
+) -> Optional[Step]:
     """The action this arm proposes for this event, or None for no action.
+
+    ``planner`` matters only for arm C; arms A and B ignore it. Passed
+    explicitly by a caller that wants its own ``Planner`` instance (so it can
+    read back stats after a run); defaults to the module-level shared instance
+    otherwise, which is what keeps signature memoisation working for every
+    caller that does not ask for its own.
+
+    **Arm C returns the plan's first step, unedited, and nothing more.** The
+    envelope validates it exactly where arm B's proposal is validated -- inside
+    ``eval.resolve.resolve_one``'s own ``judge()`` call, which every arm's
+    proposed step passes through uniformly. That symmetry is deliberate: arm C
+    does not get a bespoke execution path that arm B lacks, because a
+    difference in *how* a step is validated would be a confound in the C-B
+    contrast, not just a difference in *what* is proposed. Steps after the
+    first are the sequencing PRD 6.4 asks the plan object to carry (a wait,
+    then a template, then a conditional follow-up); they are inspectable in the
+    ``RecoveryPlan`` itself and in the PLAN ledger row, but the single-action
+    resolution model this project measures outcomes with (``sim.outcomes``)
+    has never modelled a *sequence* for any arm, so this does not regress
+    anything arm B already had.
 
     Arm B is the deterministic table **plus the table's own scheduling**, and the
     "plus" is a decision Day 2 left open, so it is worth stating why it went this
@@ -194,6 +298,21 @@ def arm_step(arm: str, event: RiskEvent) -> Optional[Step]:
     policy = ARM_POLICIES[arm]
     if not policy.acts:
         return None
+
+    if arm == "C":
+        planner = planner or _default_planner()
+        features = event.canonical_features()
+        plan = planner.plan_for(features, situation_ts=event.detected_at)
+        if not plan.steps:
+            return None
+        first = plan.steps[0]
+        return Step(
+            action=first.action,
+            channel=first.channel,
+            delay_seconds=first.delay_seconds,
+            expected_value_paise=first.expected_value_paise,
+            cost_paise=first.cost_paise,
+        )
 
     action = taxonomy.default_action(event.cause_signal)
     delay = 0
@@ -315,12 +434,12 @@ def _self_check() -> None:
     if [p.arm for p in ARM_POLICIES.values()] != list(canonical.ARMS):
         raise AssertionError("ARM_POLICIES keys must match their own arm fields")
     acting = [a for a, p in ARM_POLICIES.items() if p.acts]
-    if acting != ["B"]:
+    if acting != ["B", "C"]:
         raise AssertionError(
-            "exactly one arm acts today, and it is B: got %r. If arm C has been "
-            "wired, update this check in the same commit -- an arm that acts "
-            "without the check moving is an arm nobody decided to turn on."
-            % acting
+            "B and C act today, and only they: got %r. This check exists so "
+            "that an arm gains the ability to move money only in the same "
+            "commit that updates it -- an arm that acts without the check "
+            "moving is an arm nobody decided to turn on." % acting
         )
     if ARM_POLICIES["A"].acts:
         raise AssertionError("arm A is the control and must never act")

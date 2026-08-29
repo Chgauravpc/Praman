@@ -581,6 +581,18 @@ def compute_metrics(
         "B-A actioned": contrast(
             outcomes, "B", "A", seed=seed, resamples=resamples, actionable_only=True
         ),
+        # Day 5's ablation, and the whole reason arm C exists: does the LLM beat
+        # the lookup table it is measured against? Wired the moment arm C is
+        # wired (ARM_POLICIES["C"].wired), never before -- an unwired C would
+        # make this identical to "A-A" and print a confident zero that means
+        # nothing (PRD 8.1).
+        "C-B": contrast(outcomes, "C", "B", seed=seed, resamples=resamples),
+        # The LLM-planned arm against doing nothing at all -- the headline the
+        # shadow-mode report (pramaan.execute.runner) actually leads with, in
+        # the same "B-A" shape Day 3 established. Not the ablation (that is
+        # C-B); this is "does the system that would actually ship recover any
+        # money", asked of arm C specifically.
+        "C-A": contrast(outcomes, "C", "A", seed=seed, resamples=resamples),
     }
     return BatchMetrics(
         n_events=len(outcomes),

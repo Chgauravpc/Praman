@@ -437,10 +437,11 @@ def run_demo(batch: str, seed: int, out_dir: Path) -> int:
         ("every gated action names a rule (I3)", sum(tally["verdicts"].values()) == len(events)
             and all(rule for _, rule in tally["rules"])),
         ("arms within 5% of equal thirds", _arms_balanced(store)),
-        # -- Day 3, the gate ---------------------------------------------
+        # -- Day 3 gated this the other way ("arm C present and empty");
+        # Day 5 wires the planner, so the honest check flipped with it.
         (
-            "three arms exist, and arm C is present and empty",
-            _arm_c_is_present_and_empty(metrics),
+            "three arms exist, and arm C is wired and takes real action",
+            _arm_c_is_wired_and_acts(metrics),
         ),
         (
             "every stratum is balanced to within one event",
@@ -514,20 +515,22 @@ def _hours(seconds: int) -> str:
     return "%dh" % (seconds // 3600)
 
 
-def _arm_c_is_present_and_empty(metrics) -> bool:
-    """Arm C exists, is populated with events, and reports no result.
+def _arm_c_is_wired_and_acts(metrics) -> bool:
+    """Arm C exists, is populated with events, and now takes real action.
 
-    All three clauses matter. An arm C that did not exist would have to be
-    retrofitted on Day 5; an arm C with no events assigned would not be a third
-    of anything; and an arm C reporting a number would be reporting arm A's
-    outcomes under the LLM's name.
+    Day 3's version of this check asserted the opposite -- arm C present and
+    empty, because it was not wired yet and a number from an unwired arm would
+    have been arm A's outcomes reported under the LLM's name. Day 5 wires it
+    (``pramaan.plan.planner``), so the honest check is the mirror image: an
+    arm C that still reported zero actions on this run would mean the wiring
+    silently regressed, not that the day is being cautious.
     """
     summary = metrics.summaries.get("C")
     return (
-        "C" in metrics.unwired_arms
+        "C" not in metrics.unwired_arms
         and summary is not None
         and summary.n > 0
-        and summary.actions_taken == 0
+        and summary.actions_taken > 0
     )
 
 
@@ -630,12 +633,12 @@ def _print_recovery(events, outcomes, seed: int, batch: str):
             policy.label,
         ))
     print()
-    print("  Arm C is present, holds its third of the events, and takes no")
-    print("  action -- so its outcomes would be identical to arm A's. Its figures")
-    print("  are withheld rather than printed as zeros, because a table showing")
-    print("  'C: same as A' reads as a finding about the LLM and there is no LLM")
-    print("  yet. It is wired on Day 5; the slot exists now so that nothing has")
-    print("  to be re-run then.")
+    print("  Arm C is wired (Day 5): pramaan.plan.planner proposes a step, judged")
+    print("  by the same envelope B's proposals are. With no LLM key present its")
+    print("  plans are the NFR-2 deterministic fallback -- the same table arm B")
+    print("  reads -- so C's numbers above are not yet a measurement of an LLM.")
+    print("  'python -m pramaan.cli execute' prints the C-B ablation, the organic")
+    print("  planner violation rate and the memoisation ratio this table omits.")
 
     # ---- the headline ---------------------------------------------------
     headline = metrics.headline
@@ -1400,6 +1403,111 @@ def _thousands(value: int) -> str:
     return format(int(value), ",")
 
 
+# --------------------------------------------------------------------------
+# The planner and the executor (Day 5)
+# --------------------------------------------------------------------------
+
+
+def run_execute(
+    batch: str, seed: int, out_dir: Path, *, live_razorpay: bool
+) -> int:
+    """Shadow mode, always. A real Razorpay TEST-mode demo, only if asked and
+    only if credentials exist.
+
+    Shadow mode is unconditional and prints first: plan -> envelope -> resolve
+    over the whole batch, with arm C wired, the C-B ablation, the organic
+    planner violation rate, and the memoisation ratio (BUILD-PLAN Day 5's
+    definition of done, in one command). ``--live-razorpay`` is a separate,
+    additive step -- PRD 12.1 is explicit that shadow mode is the default and
+    executes nothing, so the live demo is never folded into it, only appended
+    after it.
+    """
+    from pramaan.execute.runner import run_execute as run_execute_live
+    from pramaan.execute.runner import run_shadow
+
+    config = load_config()
+    events: List[RiskEvent] = (
+        sim.dev_batch(seed) if batch == "dev" else sim.full_batch(seed)
+    )
+
+    db_path = out_dir / ("pramaan-execute-%s.db" % batch)
+    if db_path.exists():
+        db_path.unlink()
+    conn = connect(db_path)
+    ledger = Ledger(conn)
+
+    title = "Pramaan -- Day 5: the planner proposes, the envelope disposes"
+    print(title)
+    print("=" * len(title))
+    print("  batch                %s (%d events)" % (batch, len(events)))
+    print("  seed                 %d" % seed)
+    print("  mode                 %s" % config.mode)
+    print()
+
+    result = run_shadow(events, seed=seed, ledger=ledger)
+    print(result.report)
+
+    _section("LEDGER")
+    for kind, n in ledger.kind_counts():
+        print("  %-18s %s" % (kind, _thousands(n)))
+    verification = ledger.verify_chain()
+    print("  verify_chain         %s" % ("PASS" if verification.ok else "FAIL"))
+    export = ledger.export_jsonl(out_dir / ("execute-%s.jsonl" % batch))
+    print("  exported             %s" % _display_path(export))
+
+    if live_razorpay:
+        _section("LIVE -- Razorpay TEST mode")
+        live = run_execute_live(config, ledger=ledger)
+        if not live.attempted:
+            print("  %s" % live.message)
+        else:
+            print("  %s" % live.message)
+            print("  order id             %s" % live.order.get("id"))
+            print("  payment link id      %s" % live.payment_link.get("id"))
+            print("  payment link url     %s" % live.payment_link.get("short_url"))
+            print(
+                "  idempotent replay    %s  (calling create_order twice with the"
+                % ("no-op" if live.idempotent_replay_was_noop else "FAILED -- re-executed")
+            )
+            print("                        same idempotency key made one API call)")
+            print(
+                "  terminal-state guard %s"
+                % (
+                    "correct (order not yet paid, guard let the action through)"
+                    if live.terminal_state_guard_correct
+                    else "FAILED"
+                )
+            )
+        conn.commit()
+
+    _section("RESULT")
+    checks = [
+        ("arm C is wired and takes action", eval_arms.ARM_POLICIES["C"].acts),
+        (
+            "C-B is a real bootstrap contrast with a CI",
+            "C-B" in result.metrics.contrasts
+            and result.metrics.contrasts["C-B"].intervals["rate"].method in ("BCa", "percentile"),
+        ),
+        (
+            "memoisation ratio computed and > 1",
+            result.planner.stats.memoisation_ratio >= 1.0,
+        ),
+        ("PLAN ledger rows written, one per distinct signature",
+            dict(ledger.kind_counts()).get("PLAN", 0) == len(result.planner.newly_built)),
+        ("ledger verifies", verification.ok),
+    ]
+    if live_razorpay and live.attempted:
+        checks.append(("at least one real payment link created", bool(live.payment_link)))
+        checks.append(("double-executing the same action is a no-op", bool(live.idempotent_replay_was_noop)))
+    for label, passed in checks:
+        print("  [%s] %s" % ("x" if passed else " ", label))
+    ok = all(passed for _, passed in checks)
+    print()
+    print("  %s" % ("ALL CHECKS PASS" if ok else "SOME CHECKS FAILED"))
+    conn.close()
+    return 0 if ok else 1
+
+
 def run_models() -> int:
     """Report the configured model IDs, and verify them if a key is present.
 
@@ -1499,6 +1607,30 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="print the configured model IDs and verify them against each provider",
     )
 
+    execute_cmd = sub.add_parser(
+        "execute",
+        help="plan -> envelope -> resolve, arm C wired. Shadow mode by default.",
+    )
+    execute_group = execute_cmd.add_mutually_exclusive_group()
+    execute_group.add_argument(
+        "--dev", dest="batch", action="store_const", const="dev",
+        help="200-event dev batch (default)",
+    )
+    execute_group.add_argument(
+        "--full", dest="batch", action="store_const", const="full",
+        help="6,000-event batch",
+    )
+    execute_cmd.add_argument("--seed", type=int, default=None)
+    execute_cmd.add_argument("--out", type=Path, default=BUILD_DIR)
+    execute_cmd.add_argument(
+        "--live-razorpay",
+        action="store_true",
+        help="also create one real order and one real payment link in Razorpay "
+             "TEST mode. Requires RAZORPAY_KEY_ID/RAZORPAY_KEY_SECRET in .env. "
+             "Additive to shadow mode, never a replacement for it.",
+    )
+    execute_cmd.set_defaults(batch="dev")
+
     args = parser.parse_args(argv)
     if args.command == "models":
         return run_models()
@@ -1516,6 +1648,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.count if args.count is not None else INVESTIGATE_BATCH_SIZE,
             args.days if args.days is not None else INVESTIGATE_BATCH_DAYS,
         )
+    if args.command == "execute":
+        seed = args.seed if args.seed is not None else load_config().seed
+        args.out.mkdir(parents=True, exist_ok=True)
+        return run_execute(args.batch, seed, args.out, live_razorpay=args.live_razorpay)
     parser.error("unknown command")
     return 2
 

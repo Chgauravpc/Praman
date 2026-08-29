@@ -11,7 +11,8 @@
 #>
 param(
     [Parameter(Position = 0)]
-    [ValidateSet('help', 'demo', 'demo-full', 'demo-live', 'test', 'verify', 'golden', 'clean', 'install')]
+    [ValidateSet('help', 'demo', 'demo-full', 'demo-live', 'test', 'verify', 'golden', 'clean', 'install',
+                 'execute', 'execute-full', 'execute-live')]
     [string]$Target = 'help'
 )
 
@@ -35,6 +36,9 @@ switch ($Target) {
         Write-Output '  .\make.ps1 verify      test + demo determinism check (I8)'
         Write-Output '  .\make.ps1 golden      regenerate the golden ledger. Read the diff.'
         Write-Output '  .\make.ps1 clean       remove build artefacts'
+        Write-Output '  .\make.ps1 execute        Day 5: plan -> envelope -> resolve, arm C wired, shadow mode'
+        Write-Output '  .\make.ps1 execute-full   the same, on the 6,000-event batch'
+        Write-Output '  .\make.ps1 execute-live   also creates one real order + payment link in Razorpay TEST mode'
     }
 
     'install' { & python -m pip install -r requirements.txt }
@@ -73,6 +77,24 @@ switch ($Target) {
         & python -m pramaan.cli demo --dev | Out-Null
         Copy-Item 'build/ledger-dev.jsonl' 'tests/golden/ledger.jsonl' -Force
         Write-Output 'golden ledger regenerated -- read the diff before committing it'
+    }
+
+    'execute' {
+        $env:PRAMAAN_LLM_OFFLINE = '1'
+        & python -m pramaan.cli execute --dev
+        if ($LASTEXITCODE -ne 0) { throw "execute failed with exit code $LASTEXITCODE" }
+    }
+
+    'execute-full' {
+        $env:PRAMAAN_LLM_OFFLINE = '1'
+        & python -m pramaan.cli execute --full
+        if ($LASTEXITCODE -ne 0) { throw "execute --full failed with exit code $LASTEXITCODE" }
+    }
+
+    'execute-live' {
+        $env:PRAMAAN_LLM_OFFLINE = '1'
+        & python -m pramaan.cli execute --dev --live-razorpay
+        if ($LASTEXITCODE -ne 0) { throw "execute --live-razorpay failed with exit code $LASTEXITCODE" }
     }
 
     'clean' {

@@ -154,11 +154,20 @@ def test_arm_c_exists_and_holds_events():
     assert arms.arm_counts(events)["C"] > 0
 
 
-def test_arm_c_is_not_wired_and_takes_no_action():
-    assert arms.ARM_POLICIES["C"].wired is False
-    assert arms.ARM_POLICIES["C"].acts is False
+def test_arm_c_is_wired_and_acts_day5():
+    """Day 5: the planner proposes a real step, judged by the same envelope.
+
+    Superseded ``test_arm_c_is_not_wired_and_takes_no_action`` -- the whole
+    point of ``ARM_POLICIES["C"].wired`` being a flag rather than a comment is
+    that flipping it is a reviewable one-line diff on the day it happens, and
+    this is that diff's test.
+    """
+    assert arms.ARM_POLICIES["C"].wired is True
+    assert arms.ARM_POLICIES["C"].acts is True
     for event in sim.dev_batch(42):
-        assert arms.arm_step("C", event) is None
+        step = arms.arm_step("C", event)
+        assert step is not None
+        assert step.action in canonical.ACTIONS
 
 
 def test_arm_a_never_acts():
@@ -168,24 +177,62 @@ def test_arm_a_never_acts():
         assert arms.arm_step("A", event) is None
 
 
-def test_only_arm_b_acts_today():
+def test_arms_b_and_c_act_today():
     acting = [a for a, p in arms.ARM_POLICIES.items() if p.acts]
-    assert acting == ["B"]
+    assert acting == ["B", "C"]
 
 
-def test_an_unwired_arm_cannot_be_contrasted():
-    """metrics.contrast refuses arm C rather than reporting arm A's numbers.
+def test_arm_c_can_now_be_contrasted():
+    """Day 5: a wired arm C means ``metrics.contrast`` no longer refuses it.
 
-    An unwired arm takes no action, so its outcomes are identical to the
-    control's. A contrast against it would print 0.00pp and read as "the LLM adds
-    nothing" -- a finding about the calendar dressed as a finding about the model.
+    Superseded ``test_an_unwired_arm_cannot_be_contrasted`` -- wiring arm C is
+    exactly what makes the C-B ablation (PRD 8.1) a real number rather than a
+    refusal.
     """
     from pramaan.eval import metrics as M
     from pramaan.eval import resolve as R
 
     outcomes = R.resolve_batch(sim.dev_batch(42))
-    with pytest.raises(ValueError, match="not wired"):
-        M.contrast(outcomes, "C", "A", seed=1, resamples=100)
+    contrast = M.contrast(outcomes, "C", "B", seed=1, resamples=100)
+    assert contrast.intervals["rate"].method in ("BCa", "percentile")
+
+
+def test_arm_c_fallback_matches_arm_b_exactly_with_no_llm():
+    """NFR-2: with no cached or live planner response, arm C IS arm B's table.
+
+    This is the fact the shadow-mode report leans on to explain why an
+    estimated C-B contrast can be non-zero even though the true effect is
+    exactly zero: with no LLM key, ``Planner._build`` falls back to
+    ``default_plan_for``, which is deliberately the same lookup table
+    ``arm_step("B", ...)`` reads. Checked here as a per-event equality over
+    the whole batch, and again as an exact zero true effect in
+    ``test_arm_c_true_effect_against_b_is_zero_with_no_llm`` below -- two
+    different ways of saying the same thing, because a bug that broke one
+    might not break the other.
+    """
+    for event in sim.dev_batch(42):
+        b = arms.arm_step("B", event)
+        c = arms.arm_step("C", event)
+        assert (c.action, c.channel, c.delay_seconds) == (b.action, b.channel, b.delay_seconds)
+
+
+def test_arm_c_true_effect_against_b_is_zero_with_no_llm():
+    """PRD 8.2's estimator-validation move, applied to the C-B ablation.
+
+    With arm C's policy identical to arm B's for every event (the case above),
+    the EXACT true effect -- both potential outcomes, no sampling error -- must
+    be zero. It is what ``pramaan.execute.runner.shadow_mode_report`` prints
+    alongside the estimated C-B contrast so that a non-zero, CI-excluding-zero
+    ESTIMATE is read as arm-assignment sampling variability rather than as a
+    finding about a model that made no decision in this run.
+    """
+    from pramaan.eval.resolve import potential_outcomes, true_effect
+
+    events = sim.dev_batch(42)
+    truth = true_effect(potential_outcomes(events, "B", "C"))
+    assert truth["rate"] == 0.0
+    assert truth["value_share"] == 0.0
+    assert truth["money_per_event"] == 0.0
 
 
 # --------------------------------------------------------------------------

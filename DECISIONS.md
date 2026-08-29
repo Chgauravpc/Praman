@@ -1144,3 +1144,118 @@ key would be unusable in the configuration the project promises to support.
 
 The general rule, applied from here: if a constant's truth has a shelf life, ship
 the check next to it.
+
+---
+
+## ADR-035 — Arm C's action is the plan's first step, judged exactly where arm B's is
+
+### Decision
+
+`pramaan.eval.arms.arm_step("C", event)` builds a `RecoveryPlan` via
+`pramaan.plan.planner.Planner`, and returns an `envelope.Step` built from the
+plan's *first* step only — unedited. It is then judged by `resolve_one`'s own
+`judge()` call, the identical call arm B's proposal passes through. Arm C gets
+no bespoke execution path.
+
+### Why
+
+The alternative was to have `arm_step` itself run the plan through
+`pramaan.plan.validate.judge_recovery_plan` (including the amendment) and
+return the already-corrected step. That is strictly more code and it buys
+nothing: `resolve_one` re-judges whatever it is handed regardless of arm, so a
+pre-corrected step is just judged twice. Worse, it would make arm C's
+resolution path structurally different from arm B's — different envelope
+call sites, potentially different context construction — which is exactly the
+kind of asymmetry that turns a C−B contrast into a confound rather than an
+ablation. If arm C is measured through a different pipe than arm B, a
+non-zero C−B could be measuring the pipe, not the planner.
+
+Steps after the first (the sequencing PRD 6.4 asks the plan to carry — wait,
+then a template, then a conditional follow-up) are not lost: they live in the
+`RecoveryPlan` object and in the PLAN ledger row. They are simply not modelled
+by `sim.outcomes`, which has never modelled a multi-step sequence for *any*
+arm. Wiring arm C into the existing single-action resolution model is what
+lets the Day 3 measurement machinery (`eval.metrics.contrast`, the bootstrap,
+the golden-file test) apply to it unchanged.
+
+### Consequences
+
+`pramaan.plan.validate.judge_recovery_plan` still exists and is still tested
+directly (`tests/test_plan_validate.py`) — it is the thing a reviewer reads to
+see the full plan judged, and it is what a future multi-step executor would
+call. It is just not on the measurement path today.
+
+---
+
+## ADR-036 — The measurement layer's "no LLM import" invariant gets one named, lazy exception
+
+### Decision
+
+`tests/test_resolve.py::test_the_eval_layer_has_no_import_edge_into_the_llm_package`
+(Day 3) asserted zero import edges from `pramaan/eval/*.py` into
+`pramaan.llm`. It now allowlists exactly one: `pramaan.llm.client` imported
+inside `pramaan.eval.arms._default_planner`'s body. A companion test
+(`test_the_llm_import_in_arms_py_is_confined_to_its_one_lazy_function`) pins
+the allowlist to that one function so it cannot silently widen, and the
+existing subprocess test (`test_importing_the_eval_layer_does_not_load_the_llm_package`)
+is unchanged and still passes — merely *importing* `pramaan.eval` still loads
+no LLM module, because the import is inside a function body, not at module
+level.
+
+### Why
+
+Arm C *is* the LLM-planned arm (PRD 6.4) — proposing its step means calling
+`Planner`, which needs `LLMClient`. There is no version of "arm C is wired"
+that does not put an edge from the measurement layer to the LLM package
+somewhere. Day 3's invariant was written before arm C existed and its
+docstring's own justification — "the headline number cannot be blocked by a
+rate limit" — is about the B−A contrast specifically, which still never calls
+a planner. So the honest fix narrows the claim to what it actually protects
+rather than either leaving a known-failing test in the suite or deleting the
+protection entirely.
+
+### Consequences
+
+Two tests instead of one, doing two different jobs: the allowlist test says
+*this one edge is reviewed and expected*; the confinement test says *it did
+not grow*. Either one failing alone is informative — the first failing means
+someone added a new, unreviewed LLM import somewhere in eval/; the second
+failing alone means the existing one moved or was joined by a sibling inside
+the same function without the allowlist noticing (which cannot actually
+happen given how it is written, but the redundancy costs one assertion and
+buys a reviewer a reason to trust the allowlist rather than take it on faith).
+
+---
+
+## ADR-037 — PLAN and ACTION are different things, and neither is OUTCOME
+
+### Decision
+
+`PLAN` is one ledger row per DISTINCT signature `Planner` builds
+(`Planner.newly_built`), written by `pramaan.execute.runner.run_shadow`.
+`ACTION` is one row per real call actually made against Razorpay TEST mode,
+written by `run_execute`, and only when a real API call was attempted.
+Neither replaces `OUTCOME`, which continues to record one row per event per
+run — a simulated payment resolution — for every arm, including arm C.
+
+### Why
+
+The three answer different questions and PRD 12.2's own ledger-kind list
+keeps them apart: *what did the planner decide* (PLAN, once per situation),
+*what did the system actually do in the world* (ACTION, once per real
+execution), and *what happened to this payment* (OUTCOME, once per event,
+simulated today). Collapsing PLAN into OUTCOME would mean the ledger
+implies the planner reasoned once per event rather than once per
+signature — the opposite of what BUILD-PLAN 1.6 asks to be reported.
+Collapsing ACTION into OUTCOME would conflate a simulated resolution with a
+real, money-shaped API call, which is precisely the distinction shadow mode
+exists to preserve (PRD 12.1: shadow mode runs the full simulated pipeline
+and executes nothing; live mode executes and is a different, opt-in path).
+
+### Consequences
+
+A run that only exercises shadow mode writes PLAN rows and zero ACTION rows.
+A run that also calls `run_execute` writes ACTION rows in addition. Neither
+count is expected to equal the event count, and `tests/test_ledger_chain.py`
+checks both kinds are accepted rather than pinning a specific count — the
+count is a property of what was run, not of the schema.

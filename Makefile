@@ -1,4 +1,4 @@
-.PHONY: help demo demo-full demo-live investigate investigate-live models test verify golden clean install
+.PHONY: help demo demo-full demo-live investigate investigate-live models test verify golden clean install execute execute-full execute-live
 
 PYTHON ?= python
 
@@ -22,6 +22,9 @@ help:
 	@echo "  make investigate      the LLM investigator, from the committed cache"
 	@echo "  make investigate-live the same, against a live model; refreshes the cache"
 	@echo "  make models      print the configured model IDs and verify they resolve"
+	@echo "  make execute          Day 5: plan -> envelope -> resolve, arm C wired, shadow mode"
+	@echo "  make execute-full     the same, on the 6,000-event batch"
+	@echo "  make execute-live     also creates one real order + payment link in Razorpay TEST mode"
 	@echo "  make test        the full test suite, including invariants I1/I2/I7"
 	@echo "  make verify      test + demo determinism check (I8)"
 	@echo "  make golden      regenerate the golden ledger. Read the diff."
@@ -52,6 +55,23 @@ investigate-live:
 # Costs no completion tokens: a GET against each provider's model list.
 models:
 	@$(PYTHON) -m pramaan.cli models
+
+# Day 5. Shadow mode: arm C wired, planner memoised, C-B ablation, organic
+# violation rate. Offline like every other default target -- with no LLM key
+# the planner falls back to the NFR-2 deterministic default for every
+# signature, which is a real and honestly-labelled result, not a stub.
+execute:
+	@PRAMAAN_LLM_OFFLINE=1 $(PYTHON) -m pramaan.cli execute --dev
+
+execute-full:
+	@PRAMAAN_LLM_OFFLINE=1 $(PYTHON) -m pramaan.cli execute --full
+
+# The one target that may touch a real Razorpay account. Requires
+# RAZORPAY_KEY_ID / RAZORPAY_KEY_SECRET (test-mode) in .env; without them this
+# prints the same honest blocker `make investigate` prints for a missing LLM
+# key, and still exits 0.
+execute-live:
+	@PRAMAAN_LLM_OFFLINE=1 $(PYTHON) -m pramaan.cli execute --dev --live-razorpay
 
 test:
 	@PRAMAAN_LLM_OFFLINE=1 $(PYTHON) -m pytest tests -q

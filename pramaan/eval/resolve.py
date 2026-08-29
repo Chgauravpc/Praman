@@ -30,11 +30,17 @@ Conflating them is how a measurement window quietly becomes a treatment.
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from typing import Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from pramaan import canonical, taxonomy
 from pramaan.envelope import EnvelopeContext, Step, judge
-from pramaan.eval.arms import ARM_POLICIES, DEFAULT_CHANNEL, arm_step
+from pramaan.eval.arms import (
+    ARM_POLICIES,
+    DEFAULT_CHANNEL,
+    SHADOW_SENDER_ASSUMPTIONS,
+    arm_step,
+    envelope_context,
+)
 from pramaan.sense.models import RiskEvent
 from sim import outcomes as oracle_module
 
@@ -100,43 +106,16 @@ SETTLE_DELAY_SECONDS: Dict[str, int] = {
 
 
 # --------------------------------------------------------------------------
-# Envelope input -- shared with cli.gate_events
+# Envelope input -- moved to eval.arms on Day 5, values unchanged
 # --------------------------------------------------------------------------
 #
-# Moved here from cli.py on Day 3 with its values unchanged, because two callers
-# now need it and a second copy is how two callers stop agreeing. The Day 2
-# figures it produces are unaffected -- `tests/test_ledger_chain.py` pins the
-# GATE rows byte for byte.
-
-#: What the harness assumes about the *sending infrastructure*, as distinct from
-#: the event. A DLT template, a scripted AI disclosure and a scripted
-#: self-identification are properties of a correctly-built sender (Days 5 and 7),
-#: not properties of a failed payment -- so assuming them is what makes this pass
-#: measure the envelope's judgement about timing, taxonomy and tiers rather than
-#: measuring the fact that there is no channel plumbing yet.
-#:
-#: A named constant, and printed in the output, because an assumption that moves
-#: a headline count belongs on screen rather than in a comment.
-SHADOW_SENDER_ASSUMPTIONS = dict(
-    consent="implied",
-    dlt_template_id="1207shadow",
-    ai_disclosure_scripted=True,
-    self_identification_scripted=True,
-)
-
-
-def envelope_context(event: RiskEvent) -> EnvelopeContext:
-    """Build the envelope's input from an event. Event time only, no clock."""
-    return EnvelopeContext(
-        at=event.detected_at,
-        legal_context=event.legal_context,
-        source_type=event.source_type,
-        reason_code=event.cause_signal,
-        amount_paise=event.amount_at_risk_paise,
-        counterparty_id=event.counterparty.id,
-        merchant_id="acct_shadow",
-        **SHADOW_SENDER_ASSUMPTIONS
-    )
+# ``SHADOW_SENDER_ASSUMPTIONS`` and ``envelope_context`` moved to
+# ``pramaan.eval.arms`` on Day 5 (imported above) so that arm C's own
+# planner-envelope pass, which lives in ``arm_step``, can build the same
+# ``EnvelopeContext`` without importing this module -- ``resolve.py`` already
+# imports ``arm_step`` from ``arms.py``, so the reverse import would be a
+# cycle. `tests/test_ledger_chain.py` still pins the GATE rows byte for byte;
+# the move changed where the definition lives, not what it produces.
 
 
 # --------------------------------------------------------------------------
@@ -234,14 +213,20 @@ Oracle = Callable[[RiskEvent, str, int, int], "oracle_module.Resolution"]
 # --------------------------------------------------------------------------
 
 
-def _proposed_step(arm: str, event: RiskEvent) -> Optional[Step]:
+def _proposed_step(
+    arm: str, event: RiskEvent, *, planner: Optional[Any] = None
+) -> Optional[Step]:
     """The arm's step, with T_settle folded into its delay.
 
     ``max`` rather than ``+``: the scheduled-retry delay already clears the settle
     period, and stacking them would push a FUNDS retry to 24h + 0 = 24h in one
     class and 10 min + 24h in another for no reason anybody could defend.
+
+    ``planner`` is arm C's own ``Planner`` instance, threaded through from
+    ``resolve_batch`` so a caller can read its stats back after a run; ``None``
+    lets ``arm_step`` fall back to the shared default (see ``eval.arms``).
     """
-    step = arm_step(arm, event)
+    step = arm_step(arm, event, planner=planner)
     if step is None:
         return None
     settle = SETTLE_DELAY_SECONDS[event.reason_class]
@@ -269,6 +254,7 @@ def resolve_one(
     *,
     window_seconds: int = OBSERVATION_WINDOW_SECONDS,
     oracle: Optional[Oracle] = None,
+    planner: Optional[Any] = None,
 ) -> Outcome:
     """Resolve one event as if it were in ``arm``.
 
@@ -277,9 +263,11 @@ def resolve_one(
     Nothing in the live path ever calls it with an arm other than the event's own
     -- ``resolve_batch`` uses ``event.arm`` -- and that separation is the whole
     reason the estimator can be validated at all.
+
+    ``planner`` is arm C's ``Planner`` instance. See ``_proposed_step``.
     """
     resolve_fn = oracle or oracle_module.resolve
-    step = _proposed_step(arm, event)
+    step = _proposed_step(arm, event, planner=planner)
     # Computed from the rules-only policy regardless of which arm we are
     # resolving, so an arm A event and an arm B event with the same reason code
     # agree. Pre-treatment by construction.
@@ -392,6 +380,7 @@ def resolve_batch(
     ledger=None,
     window_seconds: int = OBSERVATION_WINDOW_SECONDS,
     oracle: Optional[Oracle] = None,
+    planner: Optional[Any] = None,
 ) -> List[Outcome]:
     """Resolve every event in its own assigned arm.
 
@@ -399,11 +388,19 @@ def resolve_batch(
     re-deriving the arm here would mean the analysis and the assignment could
     disagree, and the assignment is the thing the randomisation guarantee
     attaches to.
+
+    ``planner`` is threaded to every event's resolution so that arm C shares
+    one ``Planner`` (and therefore one signature cache) across the whole
+    batch. Passed explicitly by ``pramaan.execute.runner`` so it can read back
+    ``planner.stats`` and ``planner.newly_built`` once the batch is resolved;
+    left as ``None`` for every caller that does not care, which falls back to
+    ``eval.arms``'s shared default instance.
     """
     out: List[Outcome] = []
     for event in events:
         outcome = resolve_one(
-            event, event.arm, window_seconds=window_seconds, oracle=oracle
+            event, event.arm, window_seconds=window_seconds, oracle=oracle,
+            planner=planner,
         )
         out.append(outcome)
         if ledger is not None:
@@ -472,6 +469,7 @@ def potential_outcomes(
     *,
     window_seconds: int = OBSERVATION_WINDOW_SECONDS,
     oracle: Optional[Oracle] = None,
+    planner: Optional[Any] = None,
 ) -> List[Tuple[Outcome, Outcome]]:
     """Every event resolved under **both** arms. Simulation only.
 
@@ -480,15 +478,19 @@ def potential_outcomes(
     is an exact quantity rather than an estimate, so the randomised estimator can
     be checked against it with no Monte-Carlo error on the truth side.
 
-    It is also the single most dangerous function in the measurement layer, since
-    it computes the answer key. Nothing on the agent path may call it, nothing
-    writes its output to the ledger, and the only caller is
-    ``tests/test_estimator_unbiased.py``.
+    It is also one of the most dangerous functions in the measurement layer,
+    since it computes the answer key. Nothing on the agent path may call it,
+    and nothing writes its output to the ledger. Its callers as of Day 5:
+    ``tests/test_estimator_unbiased.py`` (B against A), and
+    ``pramaan.execute.runner`` (C against B) -- the latter uses it only to
+    print the *exact* C-B effect alongside the estimated one, never to decide
+    or gate anything, which is the same non-agent-path guarantee the B-A use
+    already had.
     """
     return [
         (
-            resolve_one(e, control_arm, window_seconds=window_seconds, oracle=oracle),
-            resolve_one(e, treatment_arm, window_seconds=window_seconds, oracle=oracle),
+            resolve_one(e, control_arm, window_seconds=window_seconds, oracle=oracle, planner=planner),
+            resolve_one(e, treatment_arm, window_seconds=window_seconds, oracle=oracle, planner=planner),
         )
         for e in events
     ]
