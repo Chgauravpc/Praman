@@ -1,14 +1,69 @@
-# Pramaan
+# Pramaan — AI Revenue Recovery
 
-An AI revenue-recovery agent that detects revenue at risk, diagnoses why, chooses
-a bounded intervention, executes it — and proves against a randomised control arm
-which rupees it actually caused to be recovered.
+<!--
+Day 6 draft of the PRD §14.2 first screen (BUILD-PLAN Day 6, block E).
+Everything in this fenced-off block is a placeholder for Day 8, once the full
+five-event-type batch and the voice recording both exist: **every bracketed
+[…] figure below is provisional and must be replaced from a real run before
+submission — do not quote a number in this block as final.** The shape and
+the copy are final; the digits are not.
+-->
+
+**On [N] revenue-at-risk events, spanning all five event types, Pramaan
+recovered ₹[X] incremental (95% CI: ₹[Y]–₹[Z]) against a randomised control
+arm. Gross recovery was ₹[3X]. Most of that was customers retrying on their
+own, and I can show you the difference.**
+
+Razorpay's own webhook docs warn that `payment.failed` is often followed by
+`payment.captured` for the same transaction — customers fix a wrong UPI PIN
+and retry inside their banking app. So gross recovered-rupees is not a
+measure of an agent's value. This one measures against a control arm.
 
 ```
-git clone <this repo> && cd pramaan
-pip install -r requirements.txt
-make demo            # no API key required
+git clone <this repo> && cd pramaan && make demo      # ~90s, no API key needed, reproduces every number above
 ```
+
+[ 20-second terminal recording: one command → live run → the number ]
+
+[ 40-second audio: the agent calling a customer in Hinglish, negotiating a
+  payment date, extracting the promise, logging it to the ledger ]
+
+|                         |                                             |
+|-------------------------|---------------------------------------------|
+| Incremental recovery    | [X]% (95% CI […, …]) vs randomised holdout   |
+| Investigator precision  | [X]% of hypotheses confirmed by the canary   |
+| Planner violation rate  | [X]% — envelope caught 100% of them          |
+| Receipt coverage        | [X]% of claims backed by a real tool call    |
+| Cost per incremental ₹  | ₹[X]                                         |
+| Events refused          | [N], with reasons below                      |
+
+**All seven brief directions:** payment degradation · checkout drop-off ·
+failed subscription · mandate retry · B2B receivables · Hinglish voice ·
+promise-to-pay — coverage table below, seven for seven.
+
+**The bar:** measured money ✓ · compliant escalation ✓ · stopping rules ✓ ·
+audit trail ✓ — see "The invariants" and "The envelope" below.
+
+---
+
+## Coverage — all seven brief directions
+
+One loop, five adapters, one channel, one cross-cutting state machine (PRD
+§3) — not seven separate products. Every direction the track brief names,
+with its home in this repo:
+
+| Brief direction | Status | Component |
+|---|---|---|
+| **Payment degradation → root cause → recovery action** | Core | Degradation-aware simulator → investigator (`decompose`/`get_downtime`) → canary → planner → envelope |
+| **Checkout drop-off recovery** | Core | `pramaan/sense/adapters/checkout.py` — abandonment-*stage*-aware (method-selection vs OTP-entry vs processing), stage-appropriate plan |
+| **Failed-subscription recovery** | Core | `pramaan/sense/adapters/subscription.py` — intervenes in the `pending` window, before `halted` |
+| **Mandate retry sequencer** | Core | `pramaan/sense/adapters/mandate.py` — schedule → notify at T−24h → attempt, R1/R6-governed |
+| **B2B receivables chaser** | Core | `pramaan/sense/adapters/receivable.py` — Smart Collect virtual-account reconciliation feeds S1, so a paid invoice is never chased |
+| **Hinglish voice recovery** | Day 7 | Sarvam realtime duplex, AI disclosure first, R8/R9 windows, distress stand-down |
+| **Promise-to-pay tracker** | Core | `pramaan/converse/promises.py` — `NONE → PROMISED → KEPT/PARTIAL/BROKEN`, per-counterparty reliability, Brier-scored calibration |
+
+Seven for seven. Voice is the one direction still landing (Day 7) — every
+adapter and the state machine that feeds it are built and tested today.
 
 ---
 

@@ -126,7 +126,17 @@ SHADOW_SENDER_ASSUMPTIONS = dict(
 
 
 def envelope_context(event: RiskEvent) -> EnvelopeContext:
-    """Build the envelope's input from an event. Event time only, no clock."""
+    """Build the envelope's input from an event. Event time only, no clock.
+
+    ``virtual_account_credited`` is the one field derived from something
+    other than a direct copy of the event: Day 6's receivable adapter emits
+    ``receivable_reconciled`` as an *observed* cause signal -- a real Smart
+    Collect webhook, not simulator ground truth -- exactly the way a
+    payment's own ``order_already_paid`` is an observed decline code. Setting
+    it here, rather than threading a bespoke field through ``RiskEvent``, is
+    what lets S1 terminate the thread the same way for both roads into
+    "already paid" (``stopping.s1_already_paid``).
+    """
     return EnvelopeContext(
         at=event.detected_at,
         legal_context=event.legal_context,
@@ -135,6 +145,9 @@ def envelope_context(event: RiskEvent) -> EnvelopeContext:
         amount_paise=event.amount_at_risk_paise,
         counterparty_id=event.counterparty.id,
         merchant_id="acct_shadow",
+        virtual_account_credited=(
+            event.source_type == "receivable" and event.cause_signal == "receivable_reconciled"
+        ),
         **SHADOW_SENDER_ASSUMPTIONS
     )
 

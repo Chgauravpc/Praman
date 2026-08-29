@@ -362,6 +362,8 @@ def generate(
     seed: int = 42,
     days: int = 0,
     degradation: "Optional[DegradationSpec]" = None,
+    *,
+    arms: Optional[_ArmAssigner] = None,
 ) -> List[RiskEvent]:
     """Generate a seeded batch of payment-failure RiskEvents.
 
@@ -377,6 +379,13 @@ def generate(
     to add an incident would have been a conditional inside the loop, and it
     would have shifted the RNG stream for every event after the first branch and
     silently invalidated the arm-vector SHA-256 pins.
+
+    ``arms`` is None for every Day 1-5 caller, which builds its own
+    ``ArmAssigner(seed)`` exactly as before -- untouched, so every pinned hash
+    in this project is unaffected. Day 6's ``generate_all_types`` is the one
+    caller that passes an assigner in, so that a payment sub-batch shares its
+    ``(source_type, band, segment)`` strata with the other four adapters'
+    sub-batches rather than balancing arms within payment alone.
     """
     if count <= 0:
         raise ValueError("count must be positive")
@@ -386,7 +395,7 @@ def generate(
         days = max(1, count // 30)
 
     rng = Random(seed)
-    arms = ArmAssigner(seed)
+    assigner = arms if arms is not None else ArmAssigner(seed)
     epoch = canonical.parse_iso(SIM_EPOCH)
     horizon_seconds = days * 86_400
 
@@ -441,7 +450,7 @@ def generate(
             cause_signal=code,
             legal_context=legal_context,
             available_actions=_available_actions(reason_class, eligibility, band),
-            arm=arms.assign("payment", band, segment),
+            arm=assigner.assign("payment", band, segment),
             external_ref=_external_ref(rng),
             latent=_self_recovery(rng, reason_class, detected_dt),
         )
@@ -471,7 +480,7 @@ def generate(
     if degradation is not None:
         from sim.incident import inject
 
-        events, _truth = inject(events, degradation, seed, arms=arms)
+        events, _truth = inject(events, degradation, seed, arms=assigner)
 
     events = [replace(e, latent=enrich(e, seed)) for e in events]
     return events
@@ -577,3 +586,347 @@ def iter_shuffled(events: Sequence[RiskEvent], seed: int) -> Iterator[RiskEvent]
     shuffled = list(events)
     Random(seed ^ 0xBEEF).shuffle(shuffled)
     return iter(shuffled)
+
+
+# ============================================================================
+# Day 6 -- the four adapters that complete the five event types (PRD 3, 5)
+# ============================================================================
+#
+# Each function below draws a raw, adapter-shaped signal -- the same kind of
+# seeded, weighted, deterministic thing the payment loop above draws -- and
+# hands it to the matching normaliser in ``pramaan.sense.adapters``, exactly
+# the step a real webhook would go through. Nothing here re-derives
+# reason_class, decay_profile or legal_context: that decision belongs to the
+# adapter, once, and is asserted by ``tests/test_sense_adapters.py``.
+#
+# Deliberately **not** wired into ``generate()``/``dev_batch()``/``full_batch()``.
+# Every pinned hash in this project -- the arm vectors, the golden ledger, the
+# 22.0x memoisation ratio -- is measured against the payment-only stream those
+# three produce, and folding four more source types into that loop would
+# invalidate all of it for a batch nobody asked for (the ADR-033 append-not-
+# perturb precedent). ``generate_all_types`` below is new and purely additive.
+
+from pramaan.sense.adapters import checkout as _checkout_adapter
+from pramaan.sense.adapters import mandate as _mandate_adapter
+from pramaan.sense.adapters import receivable as _receivable_adapter
+from pramaan.sense.adapters import subscription as _subscription_adapter
+
+#: Checkout cart values skew lower than a payment's own amount distribution --
+#: this is pre-conversion cart value, not a completed order.
+CHECKOUT_BODY_MU = math.log(900.0)
+CHECKOUT_BODY_SIGMA = 1.05
+
+#: PRD 5: which stage the customer abandoned at. Weighted so that
+#: method-selection -- the UX problem -- is the plurality, matching the
+#: intuition that most drop-off happens before a customer has committed to a
+#: method at all.
+CHECKOUT_STAGE_WEIGHTS: Sequence[Tuple[str, float]] = (
+    ("checkout_stage_method_selection", 0.45),
+    ("checkout_stage_otp_entry", 0.35),
+    ("checkout_stage_processing", 0.20),
+)
+
+SUBSCRIPTION_INSTALMENT_MU = math.log(650.0)
+SUBSCRIPTION_INSTALMENT_SIGMA = 0.55
+
+#: Razorpay auto-retries the day after ``pending`` and halts once retries are
+#: exhausted (PRD 5, [A]) -- so most pending subscriptions are on their first
+#: attempt, a smaller share on their second, fewer still on the last one
+#: before the intervention window closes.
+SUBSCRIPTION_RETRY_ATTEMPT_WEIGHTS: Sequence[Tuple[int, float]] = (
+    (1, 0.55),
+    (2, 0.30),
+    (3, 0.15),
+)
+
+MANDATE_DEBIT_MU = math.log(1_800.0)
+MANDATE_DEBIT_SIGMA = 0.60
+
+#: B2B invoices: far larger and far more heavy-tailed than a consumer payment.
+RECEIVABLE_MU = math.log(45_000.0)
+RECEIVABLE_SIGMA = 0.95
+RECEIVABLE_DAYS_OVERDUE_MIN = 1
+RECEIVABLE_DAYS_OVERDUE_MAX = 60
+
+#: The share of overdue receivables already reconciled by the time recovery
+#: would otherwise fire -- deliberately small and deliberately non-zero,
+#: because it is the population S1 exists to protect (Day 6 DoD: "a paid
+#: invoice is never chased").
+RECEIVABLE_RECONCILED_PROBABILITY = 0.08
+
+#: How the 6,000-event full batch (and the 200-event dev batch) is split
+#: across the five source types, once ``generate_all_types`` does the split.
+#: Payment stays the plurality -- it is the type every published Day 1-5
+#: figure is measured on, and PRD 5.1's own volume argument is about payment
+#: failures specifically -- with the other four sized so each clears a few
+#: hundred events on the full batch: enough to report a per-type count that
+#: means something, not enough to dilute the payment-only story those figures
+#: already tell.
+SOURCE_TYPE_WEIGHTS: Sequence[Tuple[str, float]] = (
+    ("payment", 0.55),
+    ("checkout", 0.20),
+    ("subscription", 0.11),
+    ("mandate", 0.08),
+    ("receivable", 0.06),
+)
+
+
+def _detected_at_iso(rng: Random, epoch, days: int) -> str:
+    """The same day/hour/minute/second draw the payment loop uses (above),
+    isolated here so every Day 6 adapter's timestamp shares one hour-of-day
+    shape (``HOUR_WEIGHTS``) without re-deriving payment-specific logic."""
+    day_offset = int(rng.random() * days)
+    hour = _weighted_choice(rng, tuple((str(h), w) for h, w in enumerate(HOUR_WEIGHTS)))
+    minute = int(rng.random() * 60)
+    second = int(rng.random() * 60)
+    dt = epoch + timedelta(
+        days=day_offset, hours=int(hour), minutes=minute, seconds=second
+    )
+    return canonical.to_iso(dt)
+
+
+def _lognormal_paise_with(rng: Random, mu: float, sigma: float) -> int:
+    value = math.exp(mu + sigma * _standard_normal(rng))
+    return max(1, int(round(value * 100)))
+
+
+def _counterparty_id(rng: Random, prefix: str, pool_size: int) -> str:
+    return "%s_%05d" % (prefix, int(rng.random() * pool_size) % pool_size)
+
+
+def _attach_self_recovery(event: RiskEvent, rng: Random) -> RiskEvent:
+    """Draw ``self_recovers_at`` for an adapter-built event, same as the
+    payment loop's own inline draw. Without this every Day 6 event would
+    reach ``sim.latent.enrich`` with ``latent=None`` and raise there -- an
+    adapter event needs the same counterfactual a payment event gets, or the
+    whole measurement pipeline (outcomes, potential_outcomes, metrics) has
+    nothing to resolve it against.
+    """
+    detected_dt = canonical.parse_iso(event.detected_at)
+    return replace(event, latent=_self_recovery(rng, event.reason_class, detected_dt))
+
+
+def _enrich_batch(events: List[RiskEvent], seed: int) -> List[RiskEvent]:
+    """The same Day 3 capability/intent enrichment ``generate()`` applies,
+    factored out so every Day 6 generator calls it identically."""
+    from sim.latent import enrich
+
+    return [replace(e, latent=enrich(e, seed)) for e in events]
+
+
+def generate_checkout(
+    count: int, seed: int = 42, days: int = 0, *, arms: Optional[_ArmAssigner] = None
+) -> List[RiskEvent]:
+    """A seeded batch of abandoned-checkout beacons, normalised via the
+    checkout adapter. Deterministic for a fixed (count, seed, days), on its
+    own independent ``Random`` stream (seed XORed) so it never shares draws
+    with ``generate()``'s payment stream."""
+    if count <= 0:
+        raise ValueError("count must be positive")
+    days = days if days > 0 else max(1, count // 30)
+    rng = Random(seed ^ 0xC4EC)
+    assigner = arms if arms is not None else ArmAssigner(seed)
+    epoch = canonical.parse_iso(SIM_EPOCH)
+    pool_size = max(1, count // 3)
+
+    events: List[RiskEvent] = []
+    for index in range(count):
+        stage = _weighted_choice(rng, CHECKOUT_STAGE_WEIGHTS)
+        amount_paise = _lognormal_paise_with(rng, CHECKOUT_BODY_MU, CHECKOUT_BODY_SIGMA)
+        segment = _weighted_choice(rng, SEGMENT_WEIGHTS)
+        detected_at = _detected_at_iso(rng, epoch, days)
+        counterparty_id = _counterparty_id(rng, "cp", pool_size)
+        band = canonical.amount_band(amount_paise)
+        arm = assigner.assign("checkout", band, segment)
+        beacon = _checkout_adapter.CheckoutBeacon(
+            order_id="ord_%d_%06d" % (seed, index),
+            counterparty_id=counterparty_id,
+            segment=segment,
+            amount_paise=amount_paise,
+            detected_at=detected_at,
+            stage=stage,
+            arm=arm,
+        )
+        event = _attach_self_recovery(_checkout_adapter.build_event(beacon), rng)
+        events.append(event)
+    return _enrich_batch(events, seed)
+
+
+def generate_subscription(
+    count: int, seed: int = 42, days: int = 0, *, arms: Optional[_ArmAssigner] = None
+) -> List[RiskEvent]:
+    """A seeded batch of ``subscription.pending`` signals, normalised via the
+    subscription adapter."""
+    if count <= 0:
+        raise ValueError("count must be positive")
+    days = days if days > 0 else max(1, count // 30)
+    rng = Random(seed ^ 0x5E5B)
+    assigner = arms if arms is not None else ArmAssigner(seed)
+    epoch = canonical.parse_iso(SIM_EPOCH)
+    pool_size = max(1, count // 3)
+
+    events: List[RiskEvent] = []
+    for index in range(count):
+        attempt = int(_weighted_choice(rng, tuple((str(a), w) for a, w in SUBSCRIPTION_RETRY_ATTEMPT_WEIGHTS)))
+        amount_paise = _lognormal_paise_with(
+            rng, SUBSCRIPTION_INSTALMENT_MU, SUBSCRIPTION_INSTALMENT_SIGMA
+        )
+        segment = _weighted_choice(rng, SEGMENT_WEIGHTS)
+        detected_at = _detected_at_iso(rng, epoch, days)
+        counterparty_id = _counterparty_id(rng, "cp", pool_size)
+        band = canonical.amount_band(amount_paise)
+        arm = assigner.assign("subscription", band, segment)
+        raw = _subscription_adapter.SubscriptionPendingEvent(
+            subscription_id="sub_%d_%06d" % (seed, index),
+            counterparty_id=counterparty_id,
+            segment=segment,
+            instalment_amount_paise=amount_paise,
+            detected_at=detected_at,
+            retry_attempt=attempt,
+            arm=arm,
+        )
+        event = _attach_self_recovery(_subscription_adapter.build_event(raw), rng)
+        events.append(event)
+    return _enrich_batch(events, seed)
+
+
+def generate_mandate(
+    count: int, seed: int = 42, days: int = 0, *, arms: Optional[_ArmAssigner] = None
+) -> List[RiskEvent]:
+    """A seeded batch of due e-mandate debits, normalised via the mandate
+    adapter."""
+    if count <= 0:
+        raise ValueError("count must be positive")
+    days = days if days > 0 else max(1, count // 30)
+    rng = Random(seed ^ 0x1A4D)
+    assigner = arms if arms is not None else ArmAssigner(seed)
+    epoch = canonical.parse_iso(SIM_EPOCH)
+    pool_size = max(1, count // 3)
+
+    events: List[RiskEvent] = []
+    for index in range(count):
+        amount_paise = _lognormal_paise_with(rng, MANDATE_DEBIT_MU, MANDATE_DEBIT_SIGMA)
+        segment = _weighted_choice(rng, SEGMENT_WEIGHTS)
+        detected_at = _detected_at_iso(rng, epoch, days)
+        counterparty_id = _counterparty_id(rng, "cp", pool_size)
+        band = canonical.amount_band(amount_paise)
+        arm = assigner.assign("mandate", band, segment)
+        raw = _mandate_adapter.MandateDebitDue(
+            mandate_id="mnd_%d_%06d" % (seed, index),
+            counterparty_id=counterparty_id,
+            segment=segment,
+            debit_amount_paise=amount_paise,
+            detected_at=detected_at,
+            arm=arm,
+        )
+        event = _attach_self_recovery(_mandate_adapter.build_event(raw), rng)
+        events.append(event)
+    return _enrich_batch(events, seed)
+
+
+def generate_receivable(
+    count: int, seed: int = 42, days: int = 0, *, arms: Optional[_ArmAssigner] = None
+) -> List[RiskEvent]:
+    """A seeded batch of overdue B2B invoices, normalised via the receivable
+    adapter. A small, deliberate share arrive already reconciled -- see
+    ``RECEIVABLE_RECONCILED_PROBABILITY``."""
+    if count <= 0:
+        raise ValueError("count must be positive")
+    days = days if days > 0 else max(1, count // 30)
+    rng = Random(seed ^ 0x7B0B)
+    assigner = arms if arms is not None else ArmAssigner(seed)
+    epoch = canonical.parse_iso(SIM_EPOCH)
+    pool_size = max(1, count // 3)
+
+    events: List[RiskEvent] = []
+    for index in range(count):
+        amount_paise = _lognormal_paise_with(rng, RECEIVABLE_MU, RECEIVABLE_SIGMA)
+        segment = _weighted_choice(rng, SEGMENT_WEIGHTS)
+        detected_at = _detected_at_iso(rng, epoch, days)
+        counterparty_id = _counterparty_id(rng, "biz", pool_size)
+        days_overdue = RECEIVABLE_DAYS_OVERDUE_MIN + int(
+            rng.random() * (RECEIVABLE_DAYS_OVERDUE_MAX - RECEIVABLE_DAYS_OVERDUE_MIN)
+        )
+        reconciled = rng.random() < RECEIVABLE_RECONCILED_PROBABILITY
+        band = canonical.amount_band(amount_paise)
+        arm = assigner.assign("receivable", band, segment)
+        raw = _receivable_adapter.ReceivableSignal(
+            invoice_id="inv_%d_%06d" % (seed, index),
+            counterparty_id=counterparty_id,
+            segment=segment,
+            invoice_amount_paise=amount_paise,
+            detected_at=detected_at,
+            days_overdue=days_overdue,
+            arm=arm,
+            reconciled=reconciled,
+        )
+        event = _attach_self_recovery(_receivable_adapter.build_event(raw), rng)
+        events.append(event)
+    return _enrich_batch(events, seed)
+
+
+GENERATORS_BY_SOURCE_TYPE = {
+    "checkout": generate_checkout,
+    "subscription": generate_subscription,
+    "mandate": generate_mandate,
+    "receivable": generate_receivable,
+}
+
+
+def generate_all_types(
+    total_count: int, seed: int = 42, days: int = 0
+) -> List[RiskEvent]:
+    """All five event types in one batch, split by ``SOURCE_TYPE_WEIGHTS``.
+
+    A single ``ArmAssigner(seed)`` is shared across every source type, so the
+    three-way balance stratifies on ``(source_type, band, segment)`` across
+    the whole batch -- the same guarantee ``generate()`` gives payment alone,
+    extended rather than duplicated.
+
+    This is additive, not a replacement: ``generate()``/``dev_batch()``/
+    ``full_batch()`` are untouched, and every hash Days 1-5 pinned against
+    them still reproduces (``tests/test_arms.py``, ``tests/test_incident.py``).
+    """
+    if total_count <= 0:
+        raise ValueError("total_count must be positive")
+    days = days if days > 0 else max(1, total_count // 30)
+
+    counts: Dict[str, int] = {}
+    remaining = total_count
+    types = [t for t, _ in SOURCE_TYPE_WEIGHTS]
+    for source_type, weight in SOURCE_TYPE_WEIGHTS[:-1]:
+        n = int(round(total_count * weight))
+        counts[source_type] = n
+        remaining -= n
+    counts[types[-1]] = max(0, remaining)  # the last type absorbs the rounding remainder
+
+    assigner = ArmAssigner(seed)
+    events: List[RiskEvent] = []
+    if counts["payment"] > 0:
+        events.extend(generate(counts["payment"], seed=seed, days=days, arms=assigner))
+    for source_type, generator in GENERATORS_BY_SOURCE_TYPE.items():
+        if counts[source_type] > 0:
+            events.extend(generator(counts[source_type], seed=seed, days=days, arms=assigner))
+
+    events.sort(key=lambda e: (e.detected_at, e.event_id))
+    return events
+
+
+def per_type_counts(events: Sequence[RiskEvent]) -> Dict[str, int]:
+    """Per-``source_type`` counts, in ``canonical.SOURCE_TYPES`` order --
+    what the Day 6 DoD's "per-type counts print" refers to."""
+    counts = {source_type: 0 for source_type in canonical.SOURCE_TYPES}
+    for event in events:
+        counts[event.source_type] += 1
+    return counts
+
+
+def dev_batch_all_types(seed: int = 42) -> List[RiskEvent]:
+    """The 200-event, five-source-type batch: breadth's own dev batch."""
+    return generate_all_types(DEV_BATCH_SIZE, seed=seed)
+
+
+def full_batch_all_types(seed: int = 42) -> List[RiskEvent]:
+    """The 6,000-event, five-source-type batch (Day 6 DoD: "scale to the
+    6,000-event full batch")."""
+    return generate_all_types(FULL_BATCH_SIZE, seed=seed)

@@ -25,7 +25,7 @@ measure a workload the envelope does not police.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, FrozenSet, Tuple
+from typing import Dict, FrozenSet, Optional, Tuple
 
 # --------------------------------------------------------------------------
 # The ten classes
@@ -311,14 +311,25 @@ CODES_BY_CLASS: Dict[str, Tuple[str, ...]] = {
 
 
 def reason_class_of(code: str) -> str:
-    """Class for a raw Razorpay error reason.
+    """Class for a raw cause signal -- a payment decline code, or a Day 6
+    adapter's own vocabulary (an abandonment stage, a lifecycle state).
 
-    Unknown codes are a real production case (Razorpay adds reasons), and the
-    safe default is the class that permits nothing: an unrecognised failure gets
-    escalated, never retried and never messaged.
+    Checked in this order: the 69-code payment table first, since it is the
+    frozen authority Appendix A publishes counts against; then
+    ``NON_PAYMENT_CAUSE_CLASS`` for the four Day 6 adapters. A signal that is
+    in neither is a real production case either way (Razorpay adds decline
+    reasons; an adapter can misconfigure a stage name), and the safe default
+    is the class that permits nothing: an unrecognised signal gets escalated,
+    never retried and never messaged, so an unmapped adapter fails closed
+    rather than getting retried.
     """
     entry = BY_CODE.get(code)
-    return entry.reason_class if entry is not None else "RISK"
+    if entry is not None:
+        return entry.reason_class
+    non_payment = NON_PAYMENT_CAUSE_CLASS.get(code)
+    if non_payment is not None:
+        return non_payment
+    return "RISK"
 
 
 def is_retry_eligible(code: str) -> bool:
@@ -362,6 +373,96 @@ DEFAULT_ACTION_BY_CLASS: Dict[str, str] = {
 
 def default_action(code: str) -> str:
     return DEFAULT_ACTION_BY_CLASS[reason_class_of(code)]
+
+
+# --------------------------------------------------------------------------
+# Day 6 -- non-payment cause signals, mapped onto the same ten classes
+# --------------------------------------------------------------------------
+#
+# The four adapters that land on Day 6 (checkout, subscription, mandate,
+# receivable) do not carry Razorpay decline codes at all: a checkout adapter
+# carries an abandonment *stage*, a subscription/mandate adapter carries a
+# lifecycle state, a receivable adapter carries "overdue" or "reconciled".
+# ``models.RiskEvent.reason_class``'s own docstring names the choice made
+# here: these signals "map to their own classes" rather than gain an eleventh
+# reason class of their own.
+#
+# Why reuse the ten rather than add more: ``reason_class`` is one of the
+# seven frozen signature fields (F7), and every downstream table --
+# ``REASON_CLASS_POLICY``, the ``G`` guardrails, ``sim.latent.WORLD`` -- is
+# written against exactly these ten. An eleventh class would need a policy,
+# a guardrail and a world model before any Day 6 event could be judged or
+# resolved at all, for a domain (abandonment stage, invoice age) that already
+# has an honest analogue among the ten: FUNDS's "the money isn't here yet,
+# contact is defensible, timing is what matters" is the correct policy for a
+# subscription retry, a mandate debit and an overdue receivable alike, and
+# AUTH_DROPOFF's "high self-recovery, contact allowed, no block to clear" is
+# the correct policy for someone who dropped off entering an OTP.
+#
+# This table is checked at import to be disjoint from ``BY_CODE`` (no
+# adapter signal may shadow a real decline code) and to cover every value it
+# declares.
+NON_PAYMENT_CAUSE_CLASS: Dict[str, str] = {
+    # -- checkout: the abandonment stage matters (PRD 5) --------------------
+    # Method-selection abandonment is a UX problem -- the customer did not
+    # find a method that worked for them, so ELIGIBILITY's "offer an
+    # alternate method" policy fits without inventing one.
+    "checkout_stage_method_selection": "ELIGIBILITY",
+    # OTP-entry abandonment is a delivery problem -- structurally identical
+    # to a payment's own AUTH_DROPOFF: no block to clear, the highest organic
+    # self-recovery, contact allowed.
+    "checkout_stage_otp_entry": "AUTH_DROPOFF",
+    # Stuck mid-processing looks like a payment stuck at the bank: transient,
+    # nothing for the customer to act on, contact is waste.
+    "checkout_stage_processing": "TECH_TRANSIENT",
+
+    # -- subscription: the pending window before halted ---------------------
+    # Razorpay auto-retries the following day and halts once retries are
+    # exhausted [A]; FUNDS's "scheduled retry, contact allowed" is the
+    # policy that already matches "wait for the credit cycle, nudge them to
+    # keep the instrument funded".
+    "subscription_pending": "FUNDS",
+
+    # -- mandate: schedule -> notify at T-24h -> attempt --------------------
+    # Same shape as a subscription instalment: the debit is scheduled, a
+    # notification is the contact, and R1/R6's mechanics (checked in
+    # ``rules.py``, unchanged today) govern the timing independently of this
+    # class assignment.
+    "mandate_debit_due": "FUNDS",
+
+    # -- receivable: overdue, or reconciled -------------------------------
+    "receivable_overdue": "FUNDS",
+    # A Smart Collect virtual-account credit reconciled against this invoice.
+    # Mapped to ALREADY_PAID for the same reason ``order_already_paid`` is:
+    # G4/G5 then refuse retry and contact on this signal even if the S1
+    # tripwire's own ``virtual_account_credited`` flag were somehow not
+    # threaded through -- belt and suspenders on the single most important
+    # branch in the system.
+    "receivable_reconciled": "ALREADY_PAID",
+}
+
+
+def non_payment_reason_class(cause_signal: str) -> Optional[str]:
+    return NON_PAYMENT_CAUSE_CLASS.get(cause_signal)
+
+
+def _self_check_non_payment_cause_class() -> None:
+    shadowed = sorted(set(NON_PAYMENT_CAUSE_CLASS) & set(BY_CODE))
+    if shadowed:
+        raise AssertionError(
+            "adapter cause signals must not shadow a real decline code: %r"
+            % shadowed
+        )
+    unknown = sorted(
+        cls for cls in NON_PAYMENT_CAUSE_CLASS.values() if cls not in REASON_CLASSES
+    )
+    if unknown:
+        raise AssertionError(
+            "NON_PAYMENT_CAUSE_CLASS maps onto an unknown reason class: %r" % unknown
+        )
+
+
+_self_check_non_payment_cause_class()
 
 
 # --------------------------------------------------------------------------

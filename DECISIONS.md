@@ -1259,3 +1259,48 @@ A run that also calls `run_execute` writes ACTION rows in addition. Neither
 count is expected to equal the event count, and `tests/test_ledger_chain.py`
 checks both kinds are accepted rather than pinning a specific count — the
 count is a property of what was run, not of the schema.
+
+---
+
+## ADR-038 — The canonicality screen gets one named, keyword-only bypass, for conversational calls that are never memoised
+
+### Decision
+
+`LLMClient.call()` gains `screen: bool = True`. `screen=False` skips
+`assert_no_identifiers` for that one call. The only caller allowed to pass it
+is `pramaan.converse.promises.extract_commitment_via_llm`, enforced by
+`tests/test_promises.py::test_screen_false_is_used_only_under_pramaan_converse`
+— a repo-wide grep, not a unit test of one file, so a second caller anywhere
+under `pramaan/plan` or `pramaan/investigate` fails the suite the moment it
+appears.
+
+### Why
+
+PRD 6.8 names the trap directly: "haan haan kal dekhta hoon" is not a
+promise, "Friday tak pakka kar dunga" is, and telling them apart needs the
+date and the commitment verb both, in the customer's own words. The
+canonicality screen (`prompts.py`, PRD 9.1) exists to keep exactly those
+shapes — a raw date, a raw amount — out of a prompt, because in the
+planner/investigator's world any one of them collapses the ~273-signature
+memoisation ratio from ~30x to 1x. A promise-extraction call has no
+signature to collapse: it is keyed by one specific conversation, was never
+going to be cached against another one, and the screen's entire rationale is
+protecting a shared cache key that does not exist here. Refusing the call
+anyway would not protect anything; it would just make promise extraction
+impossible to build.
+
+The alternative — redacting the customer's text before it reaches the
+prompt — was rejected: replacing "Friday" and "15000" with placeholders
+removes exactly the two things the extractor exists to read.
+
+### Consequences
+
+The screen's guarantee for `pramaan.plan`/`pramaan.investigate` is
+unchanged and still holds for every existing caller (`assert_no_identifiers`
+still runs by default; nothing there passes `screen=False`). The new surface
+area is one boolean, one caller, and two tests: the confinement grep above,
+and `test_the_llm_path_uses_screen_false_and_a_screened_call_would_have_refused_this_text`,
+which proves the bypass is load-bearing by showing the same prompt raises
+under the default `screen=True` path. Mirrors ADR-036's shape deliberately:
+a scoped, reviewed, tested exception to an invariant reads more honestly than
+either silently violating it or leaving a capability unbuilt.

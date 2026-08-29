@@ -188,6 +188,7 @@ class LLMClient:
         *,
         temperature: float = 0.0,
         max_tokens: int = 1024,
+        screen: bool = True,
     ) -> LLMResponse:
         """Answer a prompt, from cache if possible.
 
@@ -195,6 +196,9 @@ class LLMClient:
         reproducibility -- the cache is the mechanism (PRD 9). Assuming
         temperature-zero implies determinism is a common and wrong belief, and
         DECISIONS.md says so out loud.
+
+        ``screen`` defaults to True and stays True for every caller under
+        ``pramaan.plan``/``pramaan.investigate`` -- see below.
         """
         if tier not in TIERS:
             raise ValueError("tier must be one of %r, got %r" % (TIERS, tier))
@@ -207,7 +211,22 @@ class LLMClient:
         # the whole claim in prompts.py's docstring. The cost is a few regexes per
         # call; the failure it prevents is silent (every call a cache miss, budget
         # 800K -> 15M) and would surface days later as a token overrun.
-        assert_no_identifiers(prompt, context="llm.call prompt")
+        #
+        # ``screen=False`` is the one, named exception (ADR-038; mirrors
+        # ADR-036's confined lazy import). It exists for exactly one kind of
+        # caller: ``pramaan.converse``'s promise extraction, which reads a
+        # customer's own free-form reply -- "Friday tak pakka kar dunga" has
+        # to keep its date and its amount for the extractor to do anything at
+        # all, and both are exactly what the screen exists to refuse. The
+        # screen's whole rationale is protecting a *shared* memoisation ratio
+        # across a signature space of ~273 recurring cases (PRD 9.1); a
+        # conversational call is keyed by one specific conversation and was
+        # never going to be memoised regardless, so there is no ratio here for
+        # the screen to protect. ``tests/test_llm_client.py`` asserts this
+        # bypass is confined to ``pramaan/converse/`` and used nowhere under
+        # ``pramaan/plan`` or ``pramaan/investigate``.
+        if screen:
+            assert_no_identifiers(prompt, context="llm.call prompt")
 
         params = self._params(schema, temperature, max_tokens)
         candidates = self._candidates(tier)

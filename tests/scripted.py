@@ -40,6 +40,7 @@ class ScriptedLLM:
         *,
         temperature: float = 0.0,
         max_tokens: int = 1024,
+        screen: bool = True,
     ) -> LLMResponse:
         self.prompts.append(prompt)
         index = self.calls

@@ -380,8 +380,13 @@ def test_the_ledger_kind_enum_grows_one_writer_at_a_time(ledger):
     commit (ADR-011): ``pramaan.execute.runner.run_shadow`` writes one PLAN
     row per DISTINCT signature a ``Planner`` builds (``Planner.newly_built``),
     and ``run_execute`` writes one ACTION row per real call actually made
-    against Razorpay TEST mode. Both are accepted now, which is what the
-    second half of this test asserts.
+    against Razorpay TEST mode.
+
+    Day 6 added CANARY and RETRACTION, written by
+    ``pramaan.investigate.canary.write_canary_result``: one CANARY row per
+    check (always), one RETRACTION row in addition only on a REFUTED verdict.
+    All four are accepted now, which is what the second half of this test
+    asserts.
     """
     from pramaan.ledger.chain import LEDGER_KINDS
 
@@ -394,8 +399,10 @@ def test_the_ledger_kind_enum_grows_one_writer_at_a_time(ledger):
         "RECEIPT_AUDIT",
         "PLAN",
         "ACTION",
+        "CANARY",
+        "RETRACTION",
     )
-    for writable in ("PLAN", "ACTION"):
+    for writable in ("PLAN", "ACTION", "CANARY", "RETRACTION"):
         row = ledger.append(writable, ts=TS, payload={})
         assert row.kind == writable
     assert ledger.verify_chain().ok

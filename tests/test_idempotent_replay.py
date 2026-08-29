@@ -147,10 +147,17 @@ def test_insert_reports_novelty_correctly(fresh):
 
 
 def test_ledger_rejects_an_unknown_kind(fresh):
-    """The enum holds only kinds the system emits (PRD 12.2)."""
+    """The enum holds only kinds the system emits (PRD 12.2).
+
+    ``NOT_A_REAL_KIND`` rather than a kind this project might plausibly add
+    later (an earlier version of this test used ``CANARY``, which Day 6 gave
+    a real writer -- the exact reminder that this test's example must stay
+    something that will never become real, not just something that isn't
+    real yet).
+    """
     _, ledger = fresh
     with pytest.raises(ValueError, match="unknown ledger kind"):
-        ledger.append("CANARY", ts="2026-08-01T10:00:00+05:30", payload={})
+        ledger.append("NOT_A_REAL_KIND", ts="2026-08-01T10:00:00+05:30", payload={})
 
 
 def test_ledger_refuses_a_naive_timestamp(fresh):

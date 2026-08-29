@@ -79,6 +79,16 @@ LEDGER_KINDS: Tuple[str, ...] = (
     # was attempted.
     "PLAN",
     "ACTION",
+    # Day 6. ``CANARY`` is one row per canary check
+    # (``pramaan.investigate.canary.run_canary``): always written, whether it
+    # confirms or refutes -- most canary checks are expected to confirm, and
+    # a kind that only appeared on refutation would make "no CANARY rows"
+    # indistinguishable from "the canary was never run". ``RETRACTION`` is
+    # written *in addition*, only on a REFUTED verdict, carrying the
+    # contradicting evidence (ADR-011's own two-rows-not-one reasoning,
+    # applied a third time: DIAGNOSIS/RECEIPT_AUDIT, then this).
+    "CANARY",
+    "RETRACTION",
 )
 
 #: Verdicts a GATE row may carry. Three, never two: AMEND is what the envelope
