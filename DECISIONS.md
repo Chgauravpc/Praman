@@ -1304,3 +1304,26 @@ which proves the bypass is load-bearing by showing the same prompt raises
 under the default `screen=True` path. Mirrors ADR-036's shape deliberately:
 a scoped, reviewed, tested exception to an invariant reads more honestly than
 either silently violating it or leaving a capability unbuilt.
+
+## ADR-039 — The LLM is absent from exactly three layers, each for its own engineering reason
+
+**Context.** This is an LLM-forward system by design (F1): the model makes every
+judgment — diagnosis, planning, channel, timing, negotiation. So the places it is
+*not* used need a reason better than "we don't trust models," or the architecture
+reads as timid rather than deliberate. PRD §4.1 and §11.2 name three.
+
+**Decision.** Keep the LLM out of exactly three layers, and state the specific
+engineering reason for each — not a general distrust:
+
+| Layer | Reason | The failure it prevents |
+|---|---|---|
+| **Money movement** (`execute/`) | **Idempotency** | A non-deterministic component in the charge path can double-charge. `hash(payment_id, action_type, attempt_ordinal)` and the terminal-state guard require determinism the model cannot promise. |
+| **Arm assignment and estimation** (`eval/`) | **Verifiability** | An LLM anywhere near randomisation or the estimator invalidates the experiment — the number that is the whole point of the project. The B−A headline is proven to need **zero** LLM calls (`tests/test_arms.py`, a subprocess import check). |
+| **The policy envelope** (`envelope/`) | **Citability** | A compliance decision that cannot name the rule it enforced is not a compliance decision. And this layer's job is to *catch* the LLM's plans, so it cannot be the same LLM — checked by parsing imports plus a subprocess check that importing the envelope does not transitively pull in `pramaan/llm/`. |
+
+**Consequence.** This is the answer to the question the brief leaves unasked —
+*"if a model closes the loop, why would anyone let it near the money?"* The answer
+is that it isn't, in the three places where non-determinism would be catastrophic,
+and it is everywhere else, with receipts (ADR-031) and a published violation rate
+making its mistakes visible rather than hidden. The three absences are load-bearing
+and each is enforced by a test, not a convention.

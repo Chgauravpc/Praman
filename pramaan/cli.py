@@ -1316,11 +1316,16 @@ def run_investigate(seed: int, out_dir: Path, count: int, days: int) -> int:
             payload=session.as_ledger_payload(),
             llm_call_ids=[t.llm_call_id for t in session.turns],
         )
+        # The audit status (SUPPORTED / UNSUPPORTED) is already in the payload via
+        # as_ledger_payload(); it must NOT go in the `decision` column, which the
+        # ledger validates as one of ALLOW / AMEND / REJECT. Passing it there
+        # raised on any real audit -- a latent Day-4 bug that stayed hidden only
+        # because the live investigate run never completed a write (FAILURES.md,
+        # Day 8). The receipt auditor's verdict is not a gate decision.
         ledger.append(
             "RECEIPT_AUDIT",
             ts=ts,
             payload=session.audit.as_ledger_payload(),
-            decision=session.audit.status,
         )
     conn.commit()
 

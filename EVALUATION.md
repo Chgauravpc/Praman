@@ -1,7 +1,10 @@
 # EVALUATION
 
 How the headline number is produced, what it assumes, and where it could be
-wrong. Written on Day 3, when the measurement layer landed.
+wrong. The measurement layer landed on Day 3; arm C — the LLM-planned arm — was
+wired on Day 5 and run live on Days 6–7. This document keeps the Day-3 B−A
+analysis in full (it is the harness that validates the estimator) and adds the
+final arm-C result at the top.
 
 The short version: **an assumption declared and defended is a strength; the same
 assumption buried is a flaw.** Everything below is an assumption this project
@@ -9,7 +12,39 @@ makes. None of it is hidden in a comment.
 
 ---
 
-## 1. What the headline number is
+## 0. The headline, as shipped (arm C, full batch, keyless)
+
+Reproduced offline from the committed cache with every API key unset (`.env`
+moved aside, `has_any_llm_key: False` — byte-identical to the `PRAMAAN_LLM_OFFLINE=1`
+run, twice):
+
+| Contrast | Estimate (95% BCa CI) | Reading |
+|---|---|---|
+| **C − A** — does the LLM-planned loop recover money? | **+17.49pp [+14.64, +20.45]** | excludes zero; **₹7,44,967 incremental**, 96 contacted, ₹0.0003/incremental ₹ |
+| **C − B** — did the LLM earn its place over the lookup table? | **+16.91pp [+13.96, +19.81]** | excludes zero |
+| True C − B (potential outcomes, exact) | **+14.07pp** | confirms the estimate is real, not sampling noise |
+
+**What the LLM decided, inspected directly:** for `TECH_TRANSIENT` and
+`AUTH_DROPOFF` (the two highest-volume classes) the planner proposes an
+*immediate, silent, server-side* `ACT_RETRY` where the rules-only table proposes
+`ACT_WAIT`. Both are legal under the taxonomy; where the block has cleared by
+detection time, the server-side attempt recovers the payment at **zero
+customer-contact cost**, which is exactly the mechanism the true-effect number
+measures. On the full batch, **36 of 273 planner signatures** resolve to a real
+LLM reply; the rest fall back to the deterministic default (labelled), and the
+organic planner violation rate is **0.0%**.
+
+**A discipline worth recording** (`STATE.md`, the headline section): the *first*
+full-batch run — before any API key existed — printed C−B as +3.83pp [+0.93,+6.64],
+an interval **excluding zero on a provably-zero effect** (with no key, every arm-C
+plan was byte-identical to arm B's). That was not a bug — it is what "95%
+confidence" means on one random split — but quoting it alone would have been a real
+false discovery. So the shadow report **always** prints the exact true effect next
+to the estimated interval. That is why the +14.07pp above is trustworthy.
+
+---
+
+## 1. What the Day-3 B−A number is (the harness that validates the estimator)
 
 > On a 6,000-event synthetic batch, a rules-only recovery policy raised recovery
 > by **+0.58 percentage points of at-risk events, 95% CI [−2.27, +3.43]** — an
@@ -43,7 +78,7 @@ Three arms, equal thirds, assigned **at detection** and never re-derived.
 |---|---|---|
 | **A** — control | Detected, diagnosed, logged, **not acted on** | 2,003 |
 | **B** — rules-only | `taxonomy.DEFAULT_ACTION_BY_CLASS` + that table's own `retry_mode` | 2,001 |
-| **C** — LLM-planned | Present, holds its third, **takes no action**. Wired Day 5 | 1,996 |
+| **C** — LLM-planned | investigator → planner → policy envelope; wired Day 5, run live Days 6–7 | 1,996 |
 
 **Stratified** on `(source_type × amount_band × segment)` in permuted blocks of
 three. Order amounts are log-normal, so a simple coin flip lets a handful of very
@@ -51,11 +86,13 @@ large payments stack into one arm and decide the money metric by luck.
 Within-stratum spread is bounded at one event by construction and asserted at
 every batch size in `tests/test_arms.py`.
 
-**Arm C reports no figures, and the refusal is enforced rather than documented.**
-An unwired arm takes no action, so its outcomes are identical to arm A's. A table
-printing `C: 29.7%` next to `B: 30.2%` would read as *the LLM is no better than
-nothing* — a statement about the calendar dressed as a finding about the model.
-`metrics.contrast` raises if asked.
+**Arm C is now wired and takes real action** (§0 above). Through Day 3 it was
+deliberately withheld — an unwired arm's outcomes are identical to arm A's, and a
+table printing `C: 29.7%` next to `B: 30.2%` would have read as *the LLM is no
+better than nothing*, a statement about the calendar dressed as a finding about the
+model. That refusal was enforced by `metrics.contrast` raising on an unwired arm
+(`tests/test_arms.py`); the check flipped when the planner landed, so an arm C that
+reported *zero* actions after Day 5 is now the failure the suite catches.
 
 ### Power, computed rather than picked
 

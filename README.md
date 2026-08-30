@@ -1,49 +1,49 @@
 # Pramaan — AI Revenue Recovery
 
-<!--
-Day 6 draft of the PRD §14.2 first screen (BUILD-PLAN Day 6, block E).
-Everything in this fenced-off block is a placeholder for Day 8, once the full
-five-event-type batch and the voice recording both exist: **every bracketed
-[…] figure below is provisional and must be replaced from a real run before
-submission — do not quote a number in this block as final.** The shape and
-the copy are final; the digits are not.
--->
-
-**On [N] revenue-at-risk events, spanning all five event types, Pramaan
-recovered ₹[X] incremental (95% CI: ₹[Y]–₹[Z]) against a randomised control
-arm. Gross recovery was ₹[3X]. Most of that was customers retrying on their
-own, and I can show you the difference.**
+**On 6,000 revenue-at-risk events spanning all five event types, Pramaan's
+LLM-planned arm recovered ₹7,44,967 incremental against a randomised control
+arm — a +17.49pp lift in recovery rate (95% CI +14.64 to +20.45pp, BCa,
+10,000 resamples). Gross recovery was ₹59,91,945, roughly 8× the incremental.
+Most of that gross was customers retrying on their own, and this repo shows
+you the difference — reproducibly, with no API key.**
 
 Razorpay's own webhook docs warn that `payment.failed` is often followed by
 `payment.captured` for the same transaction — customers fix a wrong UPI PIN
-and retry inside their banking app. So gross recovered-rupees is not a
-measure of an agent's value. This one measures against a control arm.
+and retry inside their banking app. So gross recovered-rupees is not a measure
+of an agent's value. This one measures against a control arm.
 
 ```
-git clone <this repo> && cd pramaan && make demo      # ~90s, no API key needed, reproduces every number above
+git clone <this repo> && cd pramaan && make demo   # ~40s, NO API KEY, reproduces the invariants
+make execute-full                                  # ~2.5m, NO API KEY, reproduces the headline number
 ```
 
-![`make execute-full`, keyless, reproduces the headline from the committed cache: C−A +17.49pp, C−B +16.91pp (both excluding zero), Rs 7,44,967.63 incremental, ALL CHECKS PASS](assets/demo.gif)
+![make execute-full, keyless, reproduces the headline from the committed cache: C-A +17.49pp, C-B +16.91pp (both excluding zero), Rs 7,44,967.63 incremental, ALL CHECKS PASS](assets/demo.gif)
 
-*(`make demo` is the ~90s keyless smoke run; the GIF above is `make execute-full`, the offline command that reproduces the incremental-recovery headline. Both need no API key.)*
+*The GIF is a faithful render of the real `make execute-full` output (deterministic bytes → deterministic frames), not a screen capture and not staged. Both commands run offline from the committed cache.*
 
-🔊 **[Hinglish recovery call — 29s MP3](assets/voice-demo.mp3)** · **[transcript (review on mute)](assets/voice-transcript.md)** — a two-voice Sarvam call that opens with the AI disclosure (R10), negotiates a payment date in code-switched Hinglish, extracts "Friday tak pakka" as a structured promise, and logs it to the hash-chained ledger. Produced by `make voice-live`; the transcript reproduces keyless with `make voice`.
+🔊 **[Hinglish recovery call — 29s MP3](assets/voice-demo.mp3)** · **[transcript, for review on mute](assets/voice-transcript.md)** — a two-voice Sarvam call that opens with the **AI disclosure (R10)**, negotiates a payment date in code-switched Hinglish, extracts "Friday tak pakka" as a structured promise, and logs it to the hash-chained ledger. `make voice-live` regenerates it; the transcript reproduces keyless with `make voice`.
 
-|                         |                                             |
-|-------------------------|---------------------------------------------|
-| Incremental recovery    | [X]% (95% CI […, …]) vs randomised holdout   |
-| Investigator precision  | [X]% of hypotheses confirmed by the canary   |
-| Planner violation rate  | [X]% — envelope caught 100% of them          |
-| Receipt coverage        | [X]% of claims backed by a real tool call    |
-| Cost per incremental ₹  | ₹[X]                                         |
-| Events refused          | [N], with reasons below                      |
+| Metric | Value |
+|---|---|
+| **Incremental recovery** | **+17.49pp** recovery-rate lift (95% CI +14.64, +20.45) vs randomised holdout; **₹7,44,967** incremental |
+| Did the LLM earn its place (C−B) | **+16.91pp** [+13.96, +19.81], excludes zero; exact true effect **+14.07pp** |
+| Investigator | Canary **confirmed** the injected incident's rate/mix split exactly (tier2 rate, tier3 mix); refutation path proved separately |
+| Planner violation rate | **0.0%** organic; envelope caught **100%** of 26 engineered violations (one per R1–R11 + G1–G8) |
+| Receipt coverage | **100%** of diagnosis claims backed by a real tool call |
+| Cost per incremental ₹ | **₹0.0003** (retries are free; only voice/message carry a per-contact cost) |
+| Envelope activity | **1,095** actions amended / **0** hard-rejected on the 6,000-event gate, each citing its rule → [breakdown](SAFETY.md) |
+
+> **Design for three time budgets** (respecting a reviewer's time is itself a signal):
+> **60 seconds** — the number above and the voice clip · **5 minutes** — the pitch video ·
+> **30 minutes** — [`EVALUATION.md`](EVALUATION.md) (holdout, power, bootstrap) and [`SAFETY.md`](SAFETY.md) (rule by rule) ·
+> **Actually running it** — `make demo`, ~40s, no API key.
 
 **All seven brief directions:** payment degradation · checkout drop-off ·
 failed subscription · mandate retry · B2B receivables · Hinglish voice ·
-promise-to-pay — coverage table below, seven for seven.
+promise-to-pay — [coverage table](#coverage--all-seven-brief-directions) below, seven for seven.
 
 **The bar:** measured money ✓ · compliant escalation ✓ · stopping rules ✓ ·
-audit trail ✓ — see "The invariants" and "The envelope" below.
+audit trail ✓ — see [the invariants](#the-invariants) and [the envelope](#the-envelope-and-why-it-was-built-before-the-llm) below.
 
 ---
 
@@ -104,18 +104,31 @@ either direction. If `C − B ≈ 0`, the honest finding is that a lookup table
 matches the LLM for choosing the *action*, and the LLM's value lies in diagnosis
 and conversation instead.
 
-### The number, as of Day 3
+### The number
 
-Arms A and B are measured. Arm C is present, holds its third of the events, and
-is wired on Day 5 — its figures are **withheld** rather than printed, because an
-arm that takes no action has arm A's outcomes and printing them would read as a
-finding about the LLM.
+All three arms are measured. The two contrasts, on the full 6,000-event batch,
+reproduced offline from the committed cache with **no API key**:
 
-> **Intent-to-treat, all 6,000 events: +0.58 pp of at-risk events, 95% CI
-> [−2.27, +3.43].** The interval spans zero.
+> **C − A — does the LLM-planned loop recover money? +17.49pp of at-risk events,
+> 95% CI [+14.64, +20.45].** Excludes zero. **₹7,44,967 incremental**, 96 customers
+> contacted, cost ₹214.40 (₹0.0003 per incremental ₹).
 >
-> **On the 25.6% of events the rules-only policy actually acts on: +9.22 pp, 95%
-> CI [+4.96, +13.46].** The interval excludes zero.
+> **C − B — did the LLM earn its place over the lookup table? +16.91pp, 95% CI
+> [+13.96, +19.81].** Excludes zero, and the exact true effect (**+14.07pp**,
+> potential outcomes) confirms it is real rather than sampling noise.
+
+What the LLM actually decided, inspected directly: for `TECH_TRANSIENT` and
+`AUTH_DROPOFF` — the two highest-volume classes — the planner proposes an
+*immediate, silent, server-side* `ACT_RETRY` where the rules-only table proposes
+`ACT_WAIT` and does nothing. Both are legal under the taxonomy; where the block has
+already cleared by detection time, the server-side attempt recovers the payment at
+**zero customer-contact cost**, which is exactly what the true-effect number
+measures. The B−A contrast below is the earlier, weaker story (the lookup table
+barely beats control) — kept because the *gap* between B−A and C−B is the point.
+
+> **B − A intent-to-treat, all 6,000 events: +0.58 pp, 95% CI [−2.27, +3.43].**
+> Spans zero. **On the 25.6% of events the rules-only policy acts on: +9.22 pp,
+> 95% CI [+4.96, +13.46].** Excludes zero.
 
 Both are printed by `make demo-full`, the second labelled a pre-specified
 subgroup. **The gap between them is the finding**, and its cause is measured
@@ -176,56 +189,57 @@ engineering reason rather than a general distrust of models:
 | The policy envelope | **No** | Citability. A compliance decision that cannot name the rule it enforced is not a compliance decision — and this layer's job is to catch the LLM, so it cannot be the same LLM. |
 
 The LLM also runs once per *situation*, not once per event. On the 6,000-event
-batch there are 273 distinct planner signatures — a **22× memoisation ratio**. A
-human ops lead does not re-think policy for every ticket either.
+batch there are 273 distinct planner signatures — a **29.3× memoisation ratio**
+(7,996 `plan_for` calls / 273 distinct plans). A human ops lead does not re-think
+policy for every ticket either.
 
 ---
 
 ## Build status
 
-Day 3 of 8. **The spine, the compliance gate and the measurement layer are
-complete; the intelligence is not.** This section is accurate rather than
-aspirational, and is updated as days land.
+**Shipped — all eight days landed.** The spine, the compliance envelope, the
+three-arm measurement layer, the LLM investigator, the planner+executor, all five
+adapters, the promise machine, the canary, and the Hinglish voice loop are built,
+tested, and reproducible offline. **584 tests, 0 skipped.**
 
-**Zero LLM calls and zero tokens so far.** That ordering is deliberate: the
-headline number cannot be blocked by a rate limit, and what Day 3 built is arm B —
-the baseline the LLM has to beat from Day 5.
+The whole loop, end to end:
 
-**Working:**
+- **Sense** — `RiskEvent`, the abstraction all five event types normalise into,
+  via five adapters (`payment`/degradation, `checkout`, `subscription`, `mandate`,
+  `receivable`). SQLite event store, idempotent on `event_id` (webhooks are
+  at-least-once). Hash-chained, append-only ledger with tamper + truncation
+  detection.
+- **Investigate** *(LLM)* — an agent with a **read-only, six-tool belt** that
+  writes its own SQL against a physically separate projected database, plus a
+  deterministic **receipt auditor** that strips any claim it cannot evidence. A
+  **canary** re-checks the diagnosis against ground truth the agent cannot reach.
+- **Plan** *(LLM)* — a `RecoveryPlan` object, memoised per signature (**29.3×**
+  on the full batch), that never calls a tool; on a true cache miss it falls back
+  to the deterministic default rather than blocking (NFR-2).
+- **Envelope** *(no LLM, by design)* — `judge(step, context)` → ALLOW/AMEND/REJECT,
+  always naming the rule. R1–R11, the window matrix, tiers T0–T4, guardrails
+  G1–G8, stopping rules S1–S7.
+- **Converse** *(LLM)* — the promise-to-pay state machine and the **Sarvam voice
+  loop**: AI disclosure first (R10), R8/R9 windows, S7 stand-down, promise
+  extracted from speech into the ledger.
+- **Execute** *(no LLM)* — Razorpay TEST-mode orders and payment links,
+  `hash(payment_id, action_type, attempt_ordinal)` idempotency, a per-counterparty
+  lock, and a terminal-state guard — one real order and payment link were created
+  live (test mode) with idempotency and the guard both confirmed against the API.
 
-- `RiskEvent` — the abstraction all five event types normalise into
-- SQLite event store, idempotent on `event_id` (webhooks are at-least-once)
-- Hash-chained, append-only ledger with tamper detection
-- **The policy envelope.** R1–R11 with an instrument and a citation grade each,
-  the `(legal_context × channel × hour)` window matrix, reversibility tiers
-  T0–T4, the eight decline-reason guardrails G1–G8, and the seven stopping rules
-  S1–S7 as independent predicates. `judge(step, context)` returns
-  ALLOW / AMEND / REJECT and always names the rule
-- LLM client and committed response cache — provider router, tier mapping, 429
-  backoff honouring `Retry-After`, failover after consecutive 429s
-- Seeded simulator: payment failures weighted by the real reason distribution,
-  each carrying a latent counterfactual
-- Canonical prompt construction, with the identifier screen and its invariant test
+**Tokens are now > 0.** Days 1–3 spent nothing on purpose (the number must not
+depend on a rate limit); the LLM layers were then run live against real keys, and
+the committed cache replays them so `make demo`/`make execute-full` reproduce every
+figure with **no key at all**. On the full batch, 36 of 273 planner signatures
+resolve to a real LLM reply; the rest fall back deterministically and are labelled
+as such.
 
-Since then: the three-arm estimator that produces the headline number, and the
-**investigator** — an LLM agent with a read-only tool belt that writes its own
-SQL, plus the deterministic receipt auditor that strips any claim it cannot
-evidence.
-
-**Not built yet:** the planner, the executor, the four remaining adapters, the
-voice channel, and the canary. Arm C is present in every batch, holds its third
-of the events, and takes no action — its figures are withheld by design until it
-is wired, because an unwired arm's outcomes are identical to the control's and
-printing them would read as a finding about the LLM.
-
-**On the token count:** the pipeline still reports zero tokens consumed. Days 1–3
-spend nothing on purpose, so neither the foundation nor the safety layer depends
-on a rate limit. Day 4's investigator is built and tested end to end against a
-scripted model; the live run needs an API key and is the one thing outstanding.
-Two consequences worth being explicit about — the published receipt-coverage
-figure is currently measured against a scripted model rather than a real one, and
-`make investigate` stops with an actionable message rather than a number if no key
-is present.
+**What is not built** is stated plainly and without apology in
+**[LIMITATIONS.md](LIMITATIONS.md)**: the reflection/playbook-learning loop (design
+only), and the parts that could not be provisioned inside the window — SMS/WhatsApp
+transport, outbound PSTN (needs a DLT-registered caller ID), live production data.
+The transport is stubbed; the voice call runs over local audio, and this repo says
+so.
 
 ### The envelope, and why it was built before the LLM
 
@@ -282,11 +296,14 @@ itself; it is not a measure of how many *ways* each rule can be violated.
 ## Try it
 
 ```bash
-make demo        # 200-event dev batch, keyless, no network call
+make demo        # 200-event dev batch, keyless, no network call (~40s)
 make demo-full   # 6,000-event batch (sized from a power calculation)
+make execute-full# arm C wired: the C-A / C-B headline, keyless, from cache (~2.5m)
 make investigate # the LLM investigator, from the committed cache
+make voice       # the Hinglish recovery call -> transcript + ledger, keyless
+make voice-live  # the same, synthesised to assets/voice-demo.mp3 (needs SARVAM_API_KEY)
 make models      # print the configured model IDs and check they still resolve
-make test        # 438 tests, including the invariants below
+make test        # 584 tests, including the invariants below
 make verify      # tests, plus a byte-identical-output check across two runs
 ```
 
@@ -392,9 +409,13 @@ pramaan/
 │   ├── investigate/
 │   │   ├── tools.py       the read-only tool belt, over a projection of the store
 │   │   ├── receipts.py    the receipt auditor — deterministic, and no LLM in it
+│   │   ├── canary.py      re-checks a diagnosis against ground truth it cannot reach
 │   │   └── agent.py       the loop: 8 turns, a token ceiling, and the detector
+│   ├── plan/           the planner (emits a RecoveryPlan; never calls a tool)
+│   ├── execute/        Razorpay TEST-mode client, idempotency, locks, guard
+│   ├── converse/       promises.py (the state machine) + voice.py (Sarvam loop)
 │   ├── eval/            arms, outcome resolution, BCa intervals, metrics
-│   ├── sense/           RiskEvent, the event store
+│   ├── sense/           RiskEvent, the event store, and the five adapters/
 │   ├── ledger/          the hash chain
 │   └── llm/             client, cache, prompt construction
 ├── sim/
@@ -431,9 +452,14 @@ anything failing. The screen stayed strict; the data changed.
 
 ## Limitations, stated up front
 
-- **SMS, WhatsApp and voice transport are stubbed** behind a documented `Channel`
-  interface. DLT registration requires a registered business entity, which is not
-  obtainable for this project. No message is ever presented as having been sent.
+- **SMS and WhatsApp transport is not implemented — there is no send path, so no
+  message is ever presented as having been sent.** DLT registration requires a
+  registered business entity, which is not obtainable for this project. What *is*
+  real is the constraint the regulation imposes: R5's template gate is enforced in
+  the envelope, and the `channel` is a first-class field on every action. **Voice
+  is not stubbed** — it is a real Sarvam STT → LLM → TTS loop over local audio
+  (not a dialed PSTN call, which needs a DLT-registered caller ID). See
+  [LIMITATIONS.md](LIMITATIONS.md).
 - **Razorpay test mode only.** The config refuses to run against a key that is
   not `rzp_test_`.
 - **The event stream is synthetic.** The reason distribution is drawn from PSP

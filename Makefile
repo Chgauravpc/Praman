@@ -106,6 +106,12 @@ golden:
 	@cp build/ledger-dev.jsonl tests/golden/ledger.jsonl
 	@echo "golden ledger regenerated -- read the diff before committing it"
 
+# The all-kinds golden (PRD 12.2 / Day 8 DoD): every LEDGER_KINDS value emitted
+# by its real writer into one verified chain, so the enum advertises nothing the
+# system does not write.
+golden-kinds:
+	@PRAMAAN_LLM_OFFLINE=1 $(PYTHON) -c "from tests.test_ledger_kind_coverage import build_all_kinds_ledger, GOLDEN; build_all_kinds_ledger().export_jsonl(GOLDEN); print('wrote', GOLDEN)"
+
 clean:
 	@rm -rf build
 	@find . -name __pycache__ -type d -prune -exec rm -rf {} +
