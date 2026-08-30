@@ -3,3 +3,10 @@
 # reviewer's machine. Normalise every text file to LF in the working tree so a
 # Windows checkout produces the same bytes a Linux checkout does.
 * text=auto eol=lf
+
+# Binary artifacts must never be line-ending-normalised (the demo GIF, and the
+# voice-demo.mp3 once a Sarvam key produces it).
+*.gif binary
+*.mp3 binary
+*.png binary
+*.wav binary

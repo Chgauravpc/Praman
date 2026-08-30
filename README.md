@@ -23,7 +23,9 @@ measure of an agent's value. This one measures against a control arm.
 git clone <this repo> && cd pramaan && make demo      # ~90s, no API key needed, reproduces every number above
 ```
 
-[ 20-second terminal recording: one command → live run → the number ]
+![`make execute-full`, keyless, reproduces the headline from the committed cache: C−A +17.49pp, C−B +16.91pp (both excluding zero), Rs 7,44,967.63 incremental, ALL CHECKS PASS](assets/demo.gif)
+
+*(`make demo` is the ~90s keyless smoke run; the GIF above is `make execute-full`, the offline command that reproduces the incremental-recovery headline. Both need no API key.)*
 
 [ 40-second audio: the agent calling a customer in Hinglish, negotiating a
   payment date, extracting the promise, logging it to the ledger ]
