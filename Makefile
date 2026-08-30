@@ -81,11 +81,12 @@ execute-live:
 voice:
 	@PRAMAAN_LLM_OFFLINE=1 $(PYTHON) -m pramaan.cli voice
 
-# The same call on the live stack: the LLM turn policy (if a key is set) and
-# Sarvam TTS to assets/voice-demo.mp3 (needs SARVAM_API_KEY). Without the keys it
-# prints the same honest blocker every other live target does and still exits 0.
+# The same deterministic call, synthesised to a two-voice MP3 dialogue at
+# assets/voice-demo.mp3 via Sarvam TTS (needs SARVAM_API_KEY). The words are the
+# same reproducible ones `make voice` prints; --live-sarvam adds only the audio.
+# Without the key it prints an honest blocker and still exits 0.
 voice-live:
-	@PRAMAAN_LLM_OFFLINE=0 $(PYTHON) -m pramaan.cli voice --live-sarvam
+	@$(PYTHON) -m pramaan.cli voice --live-sarvam
 
 test:
 	@PRAMAAN_LLM_OFFLINE=1 $(PYTHON) -m pytest tests -q

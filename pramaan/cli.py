@@ -1422,18 +1422,17 @@ def run_voice(out_dir: Path, *, live_sarvam: bool) -> int:
 
     config = load_config()
 
-    # The LLM turn policy runs live only when a key is present AND the run is not
-    # forced offline. Otherwise the deterministic Hinglish turn is used, so the
-    # transcript reproduces with no key -- the same demo/demo-live split as the
-    # rest of the project.
-    llm = None
-    llm_note = "deterministic turn policy (no LLM key / offline)"
-    client = LLMClient(config)
-    if not client.offline:
-        llm = client
-        llm_note = "live LLM turn policy (fast tier)"
-
-    result = voice.run_demo_call(llm=llm)
+    # The committed artifact uses the DETERMINISTIC turn policy on purpose, for
+    # the same reason `make demo` is deterministic: the transcript then reproduces
+    # byte-for-byte with no key, and the mp3 (below) speaks exactly the lines the
+    # transcript shows, so the two can never drift. The live LLM turn policy is a
+    # real, tested code path (generate_reply with a client; verified live this
+    # session) -- it just is not the committed artifact, because a per-conversation
+    # LLM reply is not reliably reproducible offline and would make `make voice`
+    # rewrite the committed transcript. `--live-sarvam` therefore controls the
+    # AUDIO only; it never changes the words.
+    llm_note = "deterministic (keyless, reproducible); live LLM path tested separately"
+    result = voice.run_demo_call(llm=None)
 
     title = "Pramaan -- Day 7: Hinglish voice recovery"
     print(title)
@@ -1537,18 +1536,22 @@ def run_voice(out_dir: Path, *, live_sarvam: bool) -> int:
 
 
 def _synthesize_call_audio(sarvam, result, assets_dir: Path) -> Path:
-    """Write the agent side of the call to a single audio file.
+    """Synthesise the whole call as a two-voice MP3 dialogue.
 
-    Only reached when a Sarvam key is present. Concatenates the raw audio bytes
-    for each agent line -- adequate for a demo clip of a single voice; a
-    production stitch would cross-fade and interleave the customer audio, which
-    is out of scope for the artifact.
+    Only reached when a Sarvam key is present. Every turn is synthesised in
+    speaker order -- the agent in the default voice, the customer in a
+    contrasting one -- so the clip is an actual back-and-forth conversation, not
+    the agent talking into silence. MP3 is a frame stream, so concatenating the
+    per-line clips yields one file every common player handles; the codec choice
+    that makes this safe lives in ``voice.SARVAM_TTS_CODEC``.
     """
-    chunks = [sarvam.synthesize(t.text) for t in result.turns if t.speaker == "agent"]
+    from pramaan.converse.voice import SARVAM_TTS_CUSTOMER_SPEAKER
+
     audio_path = assets_dir / "voice-demo.mp3"
     with open(audio_path, "wb") as handle:
-        for chunk in chunks:
-            handle.write(chunk)
+        for turn in result.turns:
+            speaker = None if turn.speaker == "agent" else SARVAM_TTS_CUSTOMER_SPEAKER
+            handle.write(sarvam.synthesize(turn.text, speaker=speaker))
     return audio_path
 
 

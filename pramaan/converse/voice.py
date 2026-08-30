@@ -366,7 +366,22 @@ def generate_reply(
 SARVAM_STT_ENDPOINT = "https://api.sarvam.ai/speech-to-text"
 SARVAM_TTS_ENDPOINT = "https://api.sarvam.ai/text-to-speech"
 SARVAM_REALTIME_ENDPOINT = "wss://api.sarvam.ai/realtime"  # documented, unused here
-SARVAM_TTS_SPEAKER = "meera"  # a Hinglish-capable voice
+#: TTS model and voice, verified live against the API on 2026-08-30. Sarvam
+#: deprecates both models and voices without notice -- ``meera``/``bulbul:v2``
+#: were the first-drafted values and both 400'd as deprecated; the error body
+#: names the current roster, which is how these were corrected. ``ritu`` is a
+#: Hinglish-capable female voice on ``bulbul:v3``. If a live run 400s with "not
+#: recognized"/"deprecated", read the error body -- it lists the replacements.
+SARVAM_TTS_MODEL = "bulbul:v3"
+SARVAM_TTS_SPEAKER = "ritu"
+#: A second, contrasting voice for the customer side, so the demo clip is a real
+#: two-person dialogue rather than the agent talking into silence. Also a
+#: bulbul:v3 voice (male, to contrast the agent's female voice).
+SARVAM_TTS_CUSTOMER_SPEAKER = "aditya"
+#: mp3 rather than the wav default: MP3 is a frame stream, so per-line clips
+#: concatenate into one playable file, where concatenated WAVs would carry a
+#: header mid-stream and break most players.
+SARVAM_TTS_CODEC = "mp3"
 SARVAM_STT_MODEL = "saaras:v2"
 
 
@@ -417,8 +432,16 @@ class SarvamClient:
         response.raise_for_status()
         return str(response.json().get("transcript", ""))
 
-    def synthesize(self, text: str, *, language: str = "hi-IN") -> bytes:
-        """Batch TTS. Returns audio bytes for one line, Hinglish voice."""
+    def synthesize(
+        self, text: str, *, language: str = "hi-IN", speaker: Optional[str] = None
+    ) -> bytes:
+        """Batch TTS. Returns MP3 bytes for one line, Hinglish voice.
+
+        Model, voice and codec are the ones verified live on 2026-08-30 -- see
+        the module constants for why they are what they are and how to correct
+        them when Sarvam next rotates the roster. ``speaker`` overrides the
+        default voice, so the demo can give the customer a contrasting one.
+        """
         self._require()
         module = self._module()
         response = module.post(
@@ -427,7 +450,9 @@ class SarvamClient:
             json={
                 "inputs": [text],
                 "target_language_code": language,
-                "speaker": SARVAM_TTS_SPEAKER,
+                "speaker": speaker or SARVAM_TTS_SPEAKER,
+                "model": SARVAM_TTS_MODEL,
+                "output_audio_codec": SARVAM_TTS_CODEC,
             },
             timeout=90,
         )

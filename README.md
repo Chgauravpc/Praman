@@ -27,8 +27,7 @@ git clone <this repo> && cd pramaan && make demo      # ~90s, no API key needed,
 
 *(`make demo` is the ~90s keyless smoke run; the GIF above is `make execute-full`, the offline command that reproduces the incremental-recovery headline. Both need no API key.)*
 
-[ 40-second audio: the agent calling a customer in Hinglish, negotiating a
-  payment date, extracting the promise, logging it to the ledger ]
+🔊 **[Hinglish recovery call — 29s MP3](assets/voice-demo.mp3)** · **[transcript (review on mute)](assets/voice-transcript.md)** — a two-voice Sarvam call that opens with the AI disclosure (R10), negotiates a payment date in code-switched Hinglish, extracts "Friday tak pakka" as a structured promise, and logs it to the hash-chained ledger. Produced by `make voice-live`; the transcript reproduces keyless with `make voice`.
 
 |                         |                                             |
 |-------------------------|---------------------------------------------|
