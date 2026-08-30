@@ -1,4 +1,4 @@
-.PHONY: help demo demo-full demo-live investigate investigate-live models test verify golden clean install execute execute-full execute-live
+.PHONY: help demo demo-full demo-live investigate investigate-live models test verify golden clean install execute execute-full execute-live voice voice-live
 
 PYTHON ?= python
 
@@ -25,6 +25,8 @@ help:
 	@echo "  make execute          Day 5: plan -> envelope -> resolve, arm C wired, shadow mode"
 	@echo "  make execute-full     the same, on the 6,000-event batch"
 	@echo "  make execute-live     also creates one real order + payment link in Razorpay TEST mode"
+	@echo "  make voice            Day 7: the Hinglish recovery call -> transcript + ledger, keyless"
+	@echo "  make voice-live       the same on the live stack; writes assets/voice-demo.mp3 (Sarvam key)"
 	@echo "  make test        the full test suite, including invariants I1/I2/I7"
 	@echo "  make verify      test + demo determinism check (I8)"
 	@echo "  make golden      regenerate the golden ledger. Read the diff."
@@ -72,6 +74,18 @@ execute-full:
 # key, and still exits 0.
 execute-live:
 	@PRAMAAN_LLM_OFFLINE=1 $(PYTHON) -m pramaan.cli execute --dev --live-razorpay
+
+# Day 7. The Hinglish voice call. Deterministic and keyless: places the canonical
+# recovery call, writes the verbatim transcript to assets/voice-transcript.md and
+# the CONVERSE/PROMISE rows to a hash-chained ledger. No key, no network.
+voice:
+	@PRAMAAN_LLM_OFFLINE=1 $(PYTHON) -m pramaan.cli voice
+
+# The same call on the live stack: the LLM turn policy (if a key is set) and
+# Sarvam TTS to assets/voice-demo.mp3 (needs SARVAM_API_KEY). Without the keys it
+# prints the same honest blocker every other live target does and still exits 0.
+voice-live:
+	@PRAMAAN_LLM_OFFLINE=0 $(PYTHON) -m pramaan.cli voice --live-sarvam
 
 test:
 	@PRAMAAN_LLM_OFFLINE=1 $(PYTHON) -m pytest tests -q

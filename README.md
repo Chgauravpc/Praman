@@ -59,11 +59,15 @@ with its home in this repo:
 | **Failed-subscription recovery** | Core | `pramaan/sense/adapters/subscription.py` — intervenes in the `pending` window, before `halted` |
 | **Mandate retry sequencer** | Core | `pramaan/sense/adapters/mandate.py` — schedule → notify at T−24h → attempt, R1/R6-governed |
 | **B2B receivables chaser** | Core | `pramaan/sense/adapters/receivable.py` — Smart Collect virtual-account reconciliation feeds S1, so a paid invoice is never chased |
-| **Hinglish voice recovery** | Day 7 | Sarvam realtime duplex, AI disclosure first, R8/R9 windows, distress stand-down |
+| **Hinglish voice recovery** | Core | `pramaan/converse/voice.py` — Sarvam STT → LLM turn policy → Sarvam TTS, **AI disclosure first (R10)**, R8/R9 windows and self-identification, S7 distress/dispute/legal stand-down, promise extracted from speech into the state machine and the ledger |
 | **Promise-to-pay tracker** | Core | `pramaan/converse/promises.py` — `NONE → PROMISED → KEPT/PARTIAL/BROKEN`, per-counterparty reliability, Brier-scored calibration |
 
-Seven for seven. Voice is the one direction still landing (Day 7) — every
-adapter and the state machine that feeds it are built and tested today.
+Seven for seven, all Core. The voice loop lands as `pramaan/converse/voice.py`:
+`make voice` places the canonical Hinglish recovery call with **no key**, writing
+the verbatim transcript (`assets/voice-transcript.md`) and its `CONVERSE`/`PROMISE`
+rows to a hash-chained ledger. The **audio clip** (`assets/voice-demo.mp3`) is the
+one artifact that needs a live `SARVAM_API_KEY` — `make voice-live` synthesises it;
+without the key the transcript is still complete and the run exits 0.
 
 ---
 

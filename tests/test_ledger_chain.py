@@ -385,8 +385,13 @@ def test_the_ledger_kind_enum_grows_one_writer_at_a_time(ledger):
     Day 6 added CANARY and RETRACTION, written by
     ``pramaan.investigate.canary.write_canary_result``: one CANARY row per
     check (always), one RETRACTION row in addition only on a REFUTED verdict.
-    All four are accepted now, which is what the second half of this test
-    asserts.
+
+    Day 7 added CONVERSE and PROMISE, written by
+    ``pramaan.converse.voice.write_call_to_ledger``: one CONVERSE row per placed
+    call (carrying the verbatim transcript, R9/S7), and one PROMISE row in
+    addition only when a commitment was actually extracted from speech. All six
+    of the writable kinds are accepted now, which is what the second half of this
+    test asserts.
     """
     from pramaan.ledger.chain import LEDGER_KINDS
 
@@ -401,8 +406,10 @@ def test_the_ledger_kind_enum_grows_one_writer_at_a_time(ledger):
         "ACTION",
         "CANARY",
         "RETRACTION",
+        "CONVERSE",
+        "PROMISE",
     )
-    for writable in ("PLAN", "ACTION", "CANARY", "RETRACTION"):
+    for writable in ("PLAN", "ACTION", "CANARY", "RETRACTION", "CONVERSE", "PROMISE"):
         row = ledger.append(writable, ts=TS, payload={})
         assert row.kind == writable
     assert ledger.verify_chain().ok

@@ -32,9 +32,9 @@ from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple
 
 from pramaan.canonical import GENESIS_HASH, canonical_json, parse_iso, sha256_hex
 
-#: Kinds emitted as of Day 5. Grows one entry at a time, on the day the writer
-#: lands. Still planned, in the order the days add them: CONVERSE and PROMISE
-#: (Day 6/7).
+#: Kinds emitted as of Day 7. Grows one entry at a time, on the day the writer
+#: lands -- CONVERSE and PROMISE, planned since Day 5, arrive at the bottom of
+#: this tuple with the voice loop that writes them.
 #:
 #: GATE joined on Day 2 and OUTCOME/EXCEPTION on Day 3, each with a real writer
 #: on the day it joined. ADR-011 is the reason that matters -- a kind is added
@@ -89,6 +89,19 @@ LEDGER_KINDS: Tuple[str, ...] = (
     # applied a third time: DIAGNOSIS/RECEIPT_AUDIT, then this).
     "CANARY",
     "RETRACTION",
+    # Day 7. The Hinglish voice channel. ``CONVERSE`` is one row per placed call
+    # (``pramaan.converse.voice.write_call_to_ledger``), carrying the VERBATIM
+    # transcript -- R9/S7 require a conduct-reviewable record, and on a stand-down
+    # "log the conversation verbatim" is S7's literal instruction, so the customer's
+    # own words stay in the row rather than being screened out (the canonicality
+    # screen governs prompts, not the ledger). ``PROMISE`` is written *in addition*,
+    # only when a commitment was actually extracted from what the customer said --
+    # no promise, no row, the same one-writer-per-real-thing discipline as CANARY
+    # vs RETRACTION above (ADR-011). These were named as planned in Day 5's version
+    # of this comment; they arrive now with their writer, on the day the voice loop
+    # lands.
+    "CONVERSE",
+    "PROMISE",
 )
 
 #: Verdicts a GATE row may carry. Three, never two: AMEND is what the envelope

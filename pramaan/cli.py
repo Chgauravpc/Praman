@@ -1408,6 +1408,150 @@ def _thousands(value: int) -> str:
 # --------------------------------------------------------------------------
 
 
+def run_voice(out_dir: Path, *, live_sarvam: bool) -> int:
+    """Day 7: place the canonical Hinglish recovery call and write its artifacts.
+
+    Deterministic and keyless by default -- the transcript is the 'review on
+    mute' artifact and is byte-stable with no API key. With ``--live-sarvam`` and
+    a ``SARVAM_API_KEY`` present, the same call is synthesised to audio; without
+    the key it prints the same honest one-line blocker every other live target
+    prints, and still exits 0 (NFR-4).
+    """
+    from pramaan.converse import voice
+    from pramaan.ledger.chain import Ledger as _Ledger
+
+    config = load_config()
+
+    # The LLM turn policy runs live only when a key is present AND the run is not
+    # forced offline. Otherwise the deterministic Hinglish turn is used, so the
+    # transcript reproduces with no key -- the same demo/demo-live split as the
+    # rest of the project.
+    llm = None
+    llm_note = "deterministic turn policy (no LLM key / offline)"
+    client = LLMClient(config)
+    if not client.offline:
+        llm = client
+        llm_note = "live LLM turn policy (fast tier)"
+
+    result = voice.run_demo_call(llm=llm)
+
+    title = "Pramaan -- Day 7: Hinglish voice recovery"
+    print(title)
+    print("=" * len(title))
+    print("  call at              %s (IST)" % voice.DEMO_CALL_AT)
+    print("  channel              voice (Sarvam STT -> turn policy -> Sarvam TTS)")
+    print("  turn policy          %s" % llm_note)
+    print("  envelope pre-flight  %s citing %s  (ACT_VOICE, collection)"
+          % (result.gate.verdict, result.gate.rule_id))
+    print("  call placed          %s" % result.call_placed)
+
+    _section("TRANSCRIPT -- the opening is the disclosure (R10), by construction")
+    for i, turn in enumerate(result.turns, 1):
+        who = "AI agent" if turn.speaker == "agent" else "customer"
+        tag = " [scripted]" if turn.scripted else ""
+        print("  %2d  %-9s%s %s" % (i, who, tag, turn.text))
+
+    _section("COMPLIANCE -- each gate, and where it is enforced")
+    print("  R10 disclosure first %s  (turn 1 is the AI disclosure)"
+          % ("YES" if result.turns and result.turns[0].text == voice.DISCLOSURE_LINE else "NO"))
+    print("  R9 window / self-id  enforced by the envelope pre-flight above")
+    print("  R8 call cap / DND    same pre-flight (unsolicited_calls_today gate)")
+    print("  S7 stand-down        checked before every reply; not triggered here")
+    print("  (19:30 -> R9 REJECT, 08:30 -> R8 REJECT, missing disclosure -> R10")
+    print("   REJECT, and a distress signal -> stand-down: tests/test_voice.py)")
+
+    _section("PROMISE -- extracted from speech into the state machine (PRD 6.8)")
+    if result.promise is not None:
+        p = result.promise
+        print("  state                %s" % p.state)
+        print("  promised date        %s" % p.promised_date)
+        print("  channel              %s" % p.channel)
+        print("  verbatim             \"%s\"" % p.verbatim)
+    else:
+        print("  no commitment extracted (the extractor is conservative -- S3)")
+
+    # -- ledger -----------------------------------------------------------
+    out_dir.mkdir(parents=True, exist_ok=True)
+    db_path = out_dir / "voice.db"
+    if db_path.exists():
+        db_path.unlink()
+    conn = connect(db_path)
+    ledger = _Ledger(conn)
+    voice.write_call_to_ledger(ledger, result, ts=voice.DEMO_CALL_AT)
+    verification = ledger.verify_chain()
+
+    _section("LEDGER -- the call is a hash-chained record")
+    kind_counts = dict(ledger.kind_counts())  # read before the connection closes
+    for kind, count in sorted(kind_counts.items()):
+        print("  %-20s %d rows" % (kind, count))
+    print("  head hash            %s" % ledger.head_hash())
+    print("  verify_chain         %s (%d rows)"
+          % ("PASS" if verification.ok else "FAIL", verification.rows_checked))
+    ledger.export_jsonl(out_dir / "voice.jsonl")
+    conn.close()
+
+    # -- the transcript artifact ------------------------------------------
+    assets_dir = ROOT / "assets"
+    assets_dir.mkdir(parents=True, exist_ok=True)
+    transcript_path = assets_dir / "voice-transcript.md"
+    # LF-forced like ledger.export_jsonl: a CRLF here would make the committed
+    # artifact differ byte-for-byte between a Windows and a Linux checkout.
+    with open(transcript_path, "w", encoding="utf-8", newline="\n") as handle:
+        handle.write(voice.render_transcript_markdown(result))
+
+    _section("ARTIFACTS")
+    print("  transcript           %s" % _display_path(transcript_path))
+    if live_sarvam:
+        sarvam = voice.SarvamClient(config.sarvam_api_key)
+        if not sarvam.available:
+            print("  audio                SKIPPED -- SARVAM_API_KEY is not set.")
+            print("                       The transcript above is complete; only the")
+            print("                       audio clip needs a live Sarvam key. Set it in")
+            print("                       .env and re-run with --live-sarvam to write")
+            print("                       assets/voice-demo.mp3.")
+        else:
+            audio_path = _synthesize_call_audio(sarvam, result, assets_dir)
+            print("  audio                %s" % _display_path(audio_path))
+    else:
+        print("  audio                (pass --live-sarvam with SARVAM_API_KEY to")
+        print("                       synthesise assets/voice-demo.mp3)")
+
+    _section("RESULT")
+    checks = [
+        ("the call was placed (envelope allowed the ACT_VOICE step)", result.call_placed),
+        ("the AI disclosure is the first utterance (R10)",
+            bool(result.turns) and result.turns[0].text == voice.DISCLOSURE_LINE),
+        ("a promise was extracted from speech into the state machine",
+            result.promise is not None and result.promise.state == "promised"),
+        ("the call is written to the hash chain and it verifies", verification.ok),
+        ("a CONVERSE row and a PROMISE row exist",
+            kind_counts.get("CONVERSE", 0) == 1
+            and kind_counts.get("PROMISE", 0) == 1),
+    ]
+    for label, passed in checks:
+        print("  [%s] %s" % ("x" if passed else " ", label))
+    ok = all(passed for _, passed in checks)
+    print()
+    print("  %s" % ("ALL CHECKS PASS" if ok else "SOME CHECKS FAILED"))
+    return 0 if ok else 1
+
+
+def _synthesize_call_audio(sarvam, result, assets_dir: Path) -> Path:
+    """Write the agent side of the call to a single audio file.
+
+    Only reached when a Sarvam key is present. Concatenates the raw audio bytes
+    for each agent line -- adequate for a demo clip of a single voice; a
+    production stitch would cross-fade and interleave the customer audio, which
+    is out of scope for the artifact.
+    """
+    chunks = [sarvam.synthesize(t.text) for t in result.turns if t.speaker == "agent"]
+    audio_path = assets_dir / "voice-demo.mp3"
+    with open(audio_path, "wb") as handle:
+        for chunk in chunks:
+            handle.write(chunk)
+    return audio_path
+
+
 def run_execute(
     batch: str, seed: int, out_dir: Path, *, live_razorpay: bool
 ) -> int:
@@ -1631,6 +1775,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     execute_cmd.set_defaults(batch="dev")
 
+    voice_cmd = sub.add_parser(
+        "voice",
+        help="Day 7: place the canonical Hinglish recovery call, write the "
+             "transcript and ledger rows. Deterministic and keyless by default.",
+    )
+    voice_cmd.add_argument("--out", type=Path, default=BUILD_DIR)
+    voice_cmd.add_argument(
+        "--live-sarvam",
+        action="store_true",
+        help="also synthesise the call to assets/voice-demo.mp3 via Sarvam TTS. "
+             "Requires SARVAM_API_KEY in .env; without it this prints an honest "
+             "blocker and still exits 0.",
+    )
+
     args = parser.parse_args(argv)
     if args.command == "models":
         return run_models()
@@ -1652,6 +1810,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         seed = args.seed if args.seed is not None else load_config().seed
         args.out.mkdir(parents=True, exist_ok=True)
         return run_execute(args.batch, seed, args.out, live_razorpay=args.live_razorpay)
+    if args.command == "voice":
+        args.out.mkdir(parents=True, exist_ok=True)
+        return run_voice(args.out, live_sarvam=args.live_sarvam)
     parser.error("unknown command")
     return 2
 
