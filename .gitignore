@@ -1,5 +1,24 @@
 # secrets — never commit
 .env
+.env.local
+.env.*.local
+*.key
+*.pem
+secrets.*
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+Desktop.ini
+.idea/
+.vscode/
+*.swp
+*.log
+
+# scratch / temp
+scratchpad/
+tmp/
+*.tmp
 
 # build artefacts
 build/
