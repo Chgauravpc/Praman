@@ -49,16 +49,27 @@ real, byte-stable transcript -- the "review on mute" artifact. The **audio** is
 the one thing that genuinely needs a live Sarvam key, and the README and STATE.md
 say so plainly rather than shipping a synthesised clip dressed up as a real call.
 
+Honest scope of the STT leg -- read this before believing the module title
+-------------------------------------------------------------------------
+``SarvamClient.transcribe`` is implemented and (checked live 2026-09-02) actually
+works -- Sarvam ``saarika`` transcribes the Hinglish audio -- but **it is NOT
+called anywhere in the demo/voice pipeline**. ``place_call`` runs on the *typed*
+``DEMO_CUSTOMER_UTTERANCES``; the shipped clip (``assets/voice-demo.mp3``) is
+Sarvam **TTS** of that script, not a transcribed conversation. Two reasons it is
+not wired: STT returns Devanagari where the deterministic promise/S7 extractors
+are romanized-Hinglish regex, and STT needs a key + network so it cannot feed the
+*keyless-reproducible* committed transcript. So "extracted from speech" is not
+earned here; "from the customer's utterance" is, and the repo's prose now says so
+(``LIMITATIONS.md``). The disclosure (R10), the windows/cap (R8/R9), the S7
+stand-down, the turn policy and the promise extraction are all real and tested.
+
 The realtime-duplex decision (BUILD-PLAN Day 7's fallback)
 ----------------------------------------------------------
 Sarvam ships a WebSocket realtime API (Aug 2026). This module implements the
-**single-turn** stack -- batch STT on a customer utterance, the turn policy, batch
-TTS on the reply -- which is BUILD-PLAN Day 7's named fallback, taken early and
-without regret per that day's own instruction: it is the same real STT/LLM/TTS
-stack, it exercises every compliance gate identically, and it is testable and
-reproducible in a way a live duplex socket is not. ``SarvamClient`` leaves the
-realtime endpoint documented but unused; wiring the socket is a strict superset
-of this and changes none of the policy below.
+**single-turn** batch path -- the turn policy over one customer utterance, batch
+TTS on the reply -- rather than the duplex socket. ``SarvamClient`` leaves the
+realtime endpoint documented but unused; wiring the socket (and the STT leg) is a
+strict superset of this and changes none of the policy below.
 """
 from __future__ import annotations
 
@@ -745,10 +756,13 @@ def render_transcript_markdown(result: CallResult) -> str:
     lines.append("# Pramaan -- Hinglish voice recovery call (transcript)")
     lines.append("")
     lines.append(
-        "A single-turn Sarvam STT -> LLM turn policy -> Sarvam TTS call. This "
-        "transcript is produced with **no API key** (the deterministic turn "
-        "policy); the audio clip needs a live `SARVAM_API_KEY`. Every line below "
-        "cleared the same policy envelope the rest of the system runs on."
+        "A scripted single-turn Hinglish recovery call. The customer lines are a "
+        "**scripted transcript, not transcribed audio** -- the Sarvam STT leg is "
+        "implemented and verified but is not run in this clip (see `LIMITATIONS.md`). "
+        "The turn policy and promise extraction are real. This transcript is produced "
+        "with **no API key** (the deterministic turn policy); the audio clip is Sarvam "
+        "TTS and needs a live `SARVAM_API_KEY`. Every line below cleared the same "
+        "policy envelope the rest of the system runs on."
     )
     lines.append("")
     lines.append("**Compliance, gated by `pramaan.envelope.judge`, not asserted here:**")
@@ -775,7 +789,7 @@ def render_transcript_markdown(result: CallResult) -> str:
     lines.append("")
     if result.promise is not None:
         p = result.promise
-        lines.append("## Promise extracted from speech")
+        lines.append("## Promise extracted from the customer's utterance")
         lines.append("")
         lines.append("The state machine (`pramaan.converse.promises`) received:")
         lines.append("")

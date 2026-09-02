@@ -23,13 +23,44 @@ design rather than merely limiting it:
   a `converse/channels/base.py` transport seam; it was not built, and this document
   will not claim a seam that does not exist.)
 - **Outbound PSTN telephony needs a DLT-registered caller ID**, also unobtainable.
-  So the voice channel is a *real* Sarvam STT → LLM turn policy → Sarvam TTS loop
-  with real Hinglish and real promise extraction — over local audio, not a dialed
-  call. The clip is no less convincing for being honest about the transport, and
-  the README and the transcript say so.
+  So the voice channel runs over local audio, not a dialed call.
 
 A screenshot of a "sent" message that was never sent is the single most
 disqualifying thing this project could contain. There is none.
+
+### The voice clip is real TTS of a scripted call; the STT leg is not exercised in it
+
+This is the most important honest caveat in the voice work, and the README no
+longer says "STT → LLM → TTS" as if the shipped clip ran all three legs. Precisely:
+
+- **What is real in `assets/voice-demo.mp3`:** a two-voice Sarvam **TTS** rendering
+  of a scripted Hinglish recovery call. The **AI disclosure (R10)** is the first
+  utterance, unconditionally; the **envelope gating** (R8/R9/R10/S7) is real and
+  independently tested; the **turn policy** and the **promise extraction**
+  (customer's line → `Promise` → a `PROMISE` ledger row on the hash chain) are real
+  and run over the customer's **utterance**.
+- **What the shipped clip does not do:** run speech-to-text. `SarvamClient.transcribe()`
+  is implemented but is **not called** anywhere in the demo/voice pipeline — the
+  customer lines are the typed `DEMO_CUSTOMER_UTTERANCES`, not transcribed audio.
+  So "the promise was extracted from **speech**" is *not* earned; "from the
+  customer's **utterance**" is. The claims across the repo now say the latter.
+- **The STT leg does work** — verified against the live API on 2026-09-02: Sarvam
+  `saarika:v2.5` transcribes the synthesised customer audio correctly (e.g. *"Theek
+  hai, Friday tak pakka kar dunga…"* → `ठीक है, फ्राइडे तक पक्का कर दूँगा…`). Two
+  reasons it is not wired into the shipped clip: (1) it returns **Devanagari**,
+  where the deterministic promise/S7 extractors are **romanized**-Hinglish regex, so
+  driving the loop from the transcript needs the **LLM** extraction path — which
+  detects the promise from Devanagari but, tested, **miscomputes the weekday**
+  ("Friday" resolved to the wrong day); and (2) STT needs the key and network, so an
+  STT-driven transcript could not be the **keyless-reproducible** committed artifact.
+- **Why this matters for the framing:** the PRD's *default* build is "TTS reading a
+  translated script," which Pramaan is meant to beat. The shipped clip is TTS of a
+  script — so on the *transcription* axis it does not clear that bar, and this
+  document says so plainly. What it does clear is the **compliance-and-extraction**
+  axis (disclosure-first, envelope-gated, promise-to-ledger), which is the part the
+  tests verify. A genuinely STT-driven clip is a bounded follow-up: STT → LLM turn
+  policy and LLM promise extraction (both Devanagari-capable) with a deterministic
+  date-resolution fix, shipped as a `voice-live`-only, non-deterministic artifact.
 
 ## What was designed but not built (design-only)
 

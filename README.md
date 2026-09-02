@@ -21,14 +21,14 @@ make execute-full                                  # ~2.5m, NO API KEY, reproduc
 
 *The GIF is a faithful render of the real `make execute-full` output (deterministic bytes → deterministic frames), not a screen capture and not staged. Both commands run offline from the committed cache.*
 
-🔊 **[Hinglish recovery call — 29s MP3](assets/voice-demo.mp3)** · **[transcript, for review on mute](assets/voice-transcript.md)** — a two-voice Sarvam call that opens with the **AI disclosure (R10)**, negotiates a payment date in code-switched Hinglish, extracts "Friday tak pakka" as a structured promise, and logs it to the hash-chained ledger. `make voice-live` regenerates it; the transcript reproduces keyless with `make voice`.
+🔊 **[Hinglish recovery call — 29s MP3](assets/voice-demo.mp3)** · **[transcript, for review on mute](assets/voice-transcript.md)** — a two-voice Sarvam **TTS** rendering of a scripted Hinglish recovery call. It opens with the **AI disclosure (R10)**, and the agent's turn policy, envelope gating, and promise extraction are all real: the customer's line *"Friday tak pakka kar dunga"* becomes a structured promise on the hash-chained ledger. **Honest scope:** the customer lines here are a scripted transcript, *not* transcribed audio — the Sarvam **STT** leg is implemented and verified to transcribe the Hinglish audio, but the shipped clip does not run it ([why](LIMITATIONS.md#the-voice-clip-is-real-tts-of-a-scripted-call-the-stt-leg-is-not-exercised-in-it)). `make voice` reproduces the transcript keyless; `make voice-live` synthesises the audio.
 
 | Metric | Value |
 |---|---|
 | **Incremental recovery** | **+17.49pp** recovery-rate lift (95% CI +14.64, +20.45) vs randomised holdout; **₹7,44,967** incremental |
 | Did the LLM earn its place (C−B) | **+16.91pp** [+13.96, +19.81], excludes zero; exact true effect **+14.07pp** |
 | Investigator | Canary **confirmed** the injected incident's rate/mix split exactly (tier2 rate, tier3 mix); refutation path proved separately |
-| Planner violation rate | **0.0%** organic; envelope caught **100%** of 26 engineered violations (one per R1–R11 + G1–G8) |
+| Planner violation rate | **0.0%** organic — but note the base: only **36 of 273** signatures are LLM-authored (the other 185 are the deterministic fallback = arm B's already-compliant table), so this is a thin live population, not a broad compliance claim. Separately, the envelope caught **100%** of 26 engineered violations (one per R1–R11 + G1–G8) |
 | Receipt coverage | **100%** of diagnosis claims backed by a real tool call |
 | Cost per incremental ₹ | **₹0.0003** (retries are free; only voice/message carry a per-contact cost) |
 | Envelope activity | **1,095** actions amended / **0** hard-rejected on the 6,000-event gate, each citing its rule → [breakdown](SAFETY.md) |
@@ -60,7 +60,7 @@ with its home in this repo:
 | **Failed-subscription recovery** | Core | `pramaan/sense/adapters/subscription.py` — intervenes in the `pending` window, before `halted` |
 | **Mandate retry sequencer** | Core | `pramaan/sense/adapters/mandate.py` — schedule → notify at T−24h → attempt, R1/R6-governed |
 | **B2B receivables chaser** | Core | `pramaan/sense/adapters/receivable.py` — Smart Collect virtual-account reconciliation feeds S1, so a paid invoice is never chased |
-| **Hinglish voice recovery** | Core | `pramaan/converse/voice.py` — Sarvam STT → LLM turn policy → Sarvam TTS, **AI disclosure first (R10)**, R8/R9 windows and self-identification, S7 distress/dispute/legal stand-down, promise extracted from speech into the state machine and the ledger |
+| **Hinglish voice recovery** | Core | `pramaan/converse/voice.py` — real turn policy + Sarvam TTS: **AI disclosure first (R10)**, R8/R9 windows and self-identification, S7 distress/dispute/legal stand-down, and a promise extracted from the customer's **utterance** into the state machine and the ledger. The Sarvam **STT** leg is implemented and verified, but **not exercised in the shipped clip** ([LIMITATIONS.md](LIMITATIONS.md)) |
 | **Promise-to-pay tracker** | Core | `pramaan/converse/promises.py` — `NONE → PROMISED → KEPT/PARTIAL/BROKEN`, per-counterparty reliability, Brier-scored calibration |
 
 Seven for seven, all Core. The voice loop lands as `pramaan/converse/voice.py`:
@@ -112,6 +112,13 @@ reproduced offline from the committed cache with **no API key**:
 > **C − A — does the LLM-planned loop recover money? +17.49pp of at-risk events,
 > 95% CI [+14.64, +20.45].** Excludes zero. **₹7,44,967 incremental**, 96 customers
 > contacted, cost ₹214.40 (₹0.0003 per incremental ₹).
+
+*Two honest notes on these figures. The ₹ and pp are the seed-42 draw; a different
+seed gives a different draw (e.g. seed 7 → ₹3.44L incremental), which is why the
+number is reported with its CI rather than as a point.* ***The 96-contacted count,
+by contrast, is seed-invariant*** *— contact eligibility is fixed by the class-weight
+distribution and the P2 value floor, not by the per-event latent draws, so which
+events are contactable barely moves while what they recover does.*
 >
 > **C − B — did the LLM earn its place over the lookup table? +16.91pp, 95% CI
 > [+13.96, +19.81].** Excludes zero, and the exact true effect (**+14.07pp**,
@@ -221,7 +228,9 @@ The whole loop, end to end:
   G1–G8, stopping rules S1–S7.
 - **Converse** *(LLM)* — the promise-to-pay state machine and the **Sarvam voice
   loop**: AI disclosure first (R10), R8/R9 windows, S7 stand-down, promise
-  extracted from speech into the ledger.
+  extracted from the customer's utterance into the ledger. (The STT leg is
+  implemented and verified but not exercised in the shipped clip — see
+  [LIMITATIONS.md](LIMITATIONS.md).)
 - **Execute** *(no LLM)* — Razorpay TEST-mode orders and payment links,
   `hash(payment_id, action_type, attempt_ordinal)` idempotency, a per-counterparty
   lock, and a terminal-state guard — one real order and payment link were created
@@ -456,9 +465,11 @@ anything failing. The screen stayed strict; the data changed.
   message is ever presented as having been sent.** DLT registration requires a
   registered business entity, which is not obtainable for this project. What *is*
   real is the constraint the regulation imposes: R5's template gate is enforced in
-  the envelope, and the `channel` is a first-class field on every action. **Voice
-  is not stubbed** — it is a real Sarvam STT → LLM → TTS loop over local audio
-  (not a dialed PSTN call, which needs a DLT-registered caller ID). See
+  the envelope, and the `channel` is a first-class field on every action. **The
+  voice audio is real Sarvam TTS** (a scripted call over local audio, not a dialed
+  PSTN call, which needs a DLT-registered caller ID); the turn policy and promise
+  extraction are real, but the **STT leg is implemented and verified, not run in
+  the shipped clip** ([LIMITATIONS.md](LIMITATIONS.md)). See
   [LIMITATIONS.md](LIMITATIONS.md).
 - **Razorpay test mode only.** The config refuses to run against a key that is
   not `rzp_test_`.

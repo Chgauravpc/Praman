@@ -1,6 +1,6 @@
 # Pramaan -- Hinglish voice recovery call (transcript)
 
-A single-turn Sarvam STT -> LLM turn policy -> Sarvam TTS call. This transcript is produced with **no API key** (the deterministic turn policy); the audio clip needs a live `SARVAM_API_KEY`. Every line below cleared the same policy envelope the rest of the system runs on.
+A scripted single-turn Hinglish recovery call. The customer lines are a **scripted transcript, not transcribed audio** -- the Sarvam STT leg is implemented and verified but is not run in this clip (see `LIMITATIONS.md`). The turn policy and promise extraction are real. This transcript is produced with **no API key** (the deterministic turn policy); the audio clip is Sarvam TTS and needs a live `SARVAM_API_KEY`. Every line below cleared the same policy envelope the rest of the system runs on.
 
 **Compliance, gated by `pramaan.envelope.judge`, not asserted here:**
 
@@ -26,7 +26,7 @@ Envelope pre-flight on the `ACT_VOICE` step: **ALLOW**, citing **R9**.
 | 9 | Customer | Theek hai, Friday tak pakka kar dunga, pura amount. |
 | 10 | **Agent (AI)** | Bilkul theek hai, main note kar leti hoon. Us date tak koi aur call nahi aayegi. Shukriya! |
 
-## Promise extracted from speech
+## Promise extracted from the customer's utterance
 
 The state machine (`pramaan.converse.promises`) received:
 

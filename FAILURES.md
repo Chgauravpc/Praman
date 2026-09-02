@@ -1635,3 +1635,44 @@ Mechanism: Removed the `decision=` argument from the RECEIPT_AUDIT write; the
            verdict and a gate decision are different columns, and the coverage
            test makes "every advertised kind is really emitted" enforceable.
 ```
+
+### [2026-09-02] [severity 4] [layer: claims / the voice STT leg]
+
+```
+Symptom:   The README, STATE and the transcript all said the voice work is a
+           "Sarvam STT -> LLM turn policy -> Sarvam TTS" stack and that a promise
+           was "extracted from SPEECH". An audit showed the shipped clip
+           (assets/voice-demo.mp3) is TTS reading a scripted transcript:
+           SarvamClient.transcribe() is never called in the demo/voice pipeline
+           (grep: only in its own def and one fake-transport unit test). No
+           customer speech is transcribed, and nothing transcribed drives a turn
+           -- exactly the "TTS reading a script is not a voice agent" bar the
+           Day-7 prompt warned about.
+
+Diagnosis: Two real, separable facts got merged into one overstated claim. (1)
+           The STT *code* exists and, checked live on 2026-09-02, actually works:
+           Sarvam saarika:v2.5 transcribes the synthesised Hinglish audio
+           correctly. (2) It is not *wired* into the pipeline, for a concrete
+           reason found while auditing: STT returns Devanagari, where the
+           deterministic promise/S7 extractors are romanized-Hinglish regex, so
+           driving the loop from the transcript needs the LLM extraction path --
+           which detects the promise from Devanagari but miscomputes the weekday
+           ("Friday" -> the wrong day). And STT needs a key + network, so an
+           STT-driven transcript could not be the keyless-reproducible committed
+           artifact. So the pipeline was built to run on the typed
+           DEMO_CUSTOMER_UTTERANCES, and the prose never caught up to that.
+
+Mechanism: Corrected the claim everywhere rather than the code: "from speech" ->
+           "from the customer's utterance"; "Sarvam STT -> ... -> TTS" clip ->
+           "Sarvam TTS of a scripted call, STT implemented and verified but not
+           run in it"; the transcript header and the coverage row reworded; a
+           dedicated section added to LIMITATIONS.md stating the STT leg is
+           verified-but-unwired and why, and what a genuine STT-driven clip would
+           take. This is a claim fix, not a fabrication (the audio is real, the
+           script honest), but the "genuine STT leg" bar is not met and the repo
+           now says so. Severity 4: a panel probing the memory-hook artifact
+           would have caught the gap, and one overstated differentiator
+           discredits the honest ones -- which is the whole thesis of the
+           project. The lesson is the same discipline applied to a claim instead
+           of a number: state exactly what runs, not what the stack could do.
+```

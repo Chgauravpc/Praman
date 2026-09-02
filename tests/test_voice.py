@@ -184,7 +184,9 @@ def test_an_ordinary_reply_does_not_stand_down():
 
 
 # --------------------------------------------------------------------------
-# The promise, extracted from speech
+# The promise, extracted from the customer's (typed) utterance -- NOT from
+# transcribed audio: the STT leg is implemented but not run in the demo pipeline
+# (see LIMITATIONS.md). These tests exercise text -> Promise -> ledger.
 # --------------------------------------------------------------------------
 
 
@@ -300,7 +302,7 @@ def test_the_keyless_demo_call_is_deterministic():
 def test_the_transcript_markdown_shows_the_disclosure_and_the_promise():
     md = voice.render_transcript_markdown(voice.run_demo_call())
     assert voice.DISCLOSURE_LINE in md
-    assert "Promise extracted from speech" in md
+    assert "Promise extracted from the customer's utterance" in md
     assert "2026-08-14" in md  # the resolved promised date
 
 
