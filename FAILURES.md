@@ -1676,3 +1676,51 @@ Mechanism: Corrected the claim everywhere rather than the code: "from speech" ->
            project. The lesson is the same discipline applied to a claim instead
            of a number: state exactly what runs, not what the stack could do.
 ```
+
+### [2026-09-05] [severity 3] [layer: tests / offline default]
+
+```
+Symptom:   `python -m pytest tests -q` appeared to hang. Twelve tests in, no
+           progress for over twenty minutes. It was not hung: `git status
+           fixtures/` showed new untracked llm_cache entries appearing while it
+           sat there. The suite was resolving the full five-type batch against a
+           LIVE model, one signature at a time, spending money.
+
+Diagnosis: The offline flag lives in the environment, and `make test` sets it
+           (Makefile:93). Every test that builds its own Config passes
+           llm_offline=True. But test_action_coverage's module fixture calls
+           `resolve_batch(full_batch_all_types(42))` with no `planner=`, and
+           that falls back to eval.arms' shared default Planner, which calls
+           `load_config()`, which reads the environment. So the safety was real
+           for the documented entry point and absent for the obvious one: a
+           reviewer types `pytest`, not `make test`. I typed `pytest`. Twice.
+           Same root cause as the Day-7 `execute --full` incident -- the
+           protection was a habit rather than a property of the code.
+
+Mechanism: Added tests/conftest.py: a session-scoped autouse fixture doing
+           `os.environ.setdefault("PRAMAAN_LLM_OFFLINE", "1")`. setdefault, not
+           assignment, so an explicit `PRAMAAN_LLM_OFFLINE=0` still wins and the
+           one test that deliberately exercises the online guard is untouched
+           (it constructs Config(llm_offline=False) directly, which never reads
+           the environment). Measured either way: with the flag, resolve_batch
+           over 6,000 events takes 1.1s; without it the same call had not
+           finished after twenty minutes.
+
+           A second lesson came out of verifying the fix. Stray cache entries
+           kept appearing in fixtures/ *after* the conftest landed, which looked
+           like the fix had failed. It had not: instrumenting LLMCache.put with
+           a stack dump showed the clean suite makes exactly five put calls, all
+           of them test_taxonomy_and_cache unit tests writing synthetic records
+           directly, and zero from the client. The entries were being written by
+           an orphan -- the original offline-less pytest, whose shell wrapper had
+           been killed while the python child survived and kept dialling Groq for
+           ninety minutes at roughly one call a minute. Killed by PID; fixtures
+           clean immediately afterwards. Do not diagnose from a directory listing
+           when the thing you are measuring has more than one possible writer.
+           Severity 3: no published figure
+           was ever wrong, but a repo whose entire claim is "keyless, offline,
+           byte-reproducible" whose test suite silently dials out on the default
+           invocation is a contradiction a reviewer would find in one command.
+           The lesson: if a guarantee depends on remembering a prefix, it is not
+           a guarantee. Make the safe path the default path.
+```

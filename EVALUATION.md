@@ -597,7 +597,7 @@ git clone <repo> && cd pramaan
 make install
 make demo        # 200-event dev batch, ~40 s, no API key, no network
 make demo-full   # 6,000-event batch, ~105 s. The governing figure
-make test        # 329 tests
+make test        # 692 tests
 make verify      # test + I8: two demo runs diffed byte for byte
 ```
 
