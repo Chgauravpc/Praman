@@ -1622,9 +1622,12 @@ function render(data) {
        * the actioned subset; showing it here under the headline's label is the
        * exact category error the README warns about. */
       fail('No headline metrics in this snapshot',
-        'The contrast tiles need the BatchMetrics the execute run writes. ' +
-        'The observed per-arm numbers below are still real, but they are not ' +
-        'the headline and are not labelled as it.',
+        'The contrast tiles need the BatchMetrics an execute run writes; a ' +
+        'demo run does not produce them. The observed per-arm numbers below ' +
+        'are still real, but they are not the headline and are not labelled ' +
+        'as it. If the run panel is showing, execute-dev gets you contrasts ' +
+        'with intervals in about 45 seconds; execute-full is the published ' +
+        'headline and takes about eight minutes.',
         'make execute-full && make dashboard');
     }
 
@@ -1693,10 +1696,37 @@ fetch(SOURCE, { cache: 'no-store' })
     initRunner();
   })
   .catch(function (error) {
-    fail('Could not load ' + SOURCE,
-      'Two things cause this. Either the snapshot has not been generated yet, ' +
-      'or the page was opened as a file:// URL — Chrome blocks fetch() ' +
-      'there, so it needs a static server rooted at the repo, not at dashboard/. ' +
-      '(' + error.message + ')',
-      'python -m pramaan.report.server\n# then open http://127.0.0.1:8000/dashboard/');
+    /* A missing snapshot is the FIRST thing anyone who clones this repo sees,
+     * because build/ is gitignored and nothing has been run yet. The old message
+     * told them to start the run server -- which, if they are reading it over
+     * HTTP, is exactly what they already did -- and left the run panel hidden,
+     * so the one click that fixes this in fifteen seconds was invisible.
+     *
+     * So ask the server whether it can run anything before deciding what this
+     * failure even means. */
+    fetch('/api/runs', { cache: 'no-store' })
+      .then(function (r) {
+        if (!r.ok) throw new Error('no run API');
+        return r.json();
+      })
+      .then(function (body) {
+        fail('No snapshot yet — nothing has been run in this checkout',
+          'This is a fresh clone: build/ is not in git, so there is no ledger to ' +
+          'aggregate and nothing for this page to render. The buttons below fix ' +
+          'that — click demo-dev, about 15 seconds, and it runs the real CLI, ' +
+          'writes a ledger, aggregates it, and this page fills itself in.');
+        renderRunButtons(body.runs);
+        show('run-section');
+        show('replay-section');
+        initReplay();
+        initLiveCall();
+      })
+      .catch(function () {
+        fail('Could not load ' + SOURCE,
+          'Two things cause this. Either the snapshot has not been generated yet, ' +
+          'or the page was opened as a file:// URL — Chrome blocks fetch() ' +
+          'there, so it needs a static server rooted at the repo, not at dashboard/. ' +
+          '(' + error.message + ')',
+          'python -m pramaan.report.server\n# then open http://127.0.0.1:8000/dashboard/');
+      });
   });
