@@ -84,14 +84,14 @@ days slipped; none were. The canary ships (confirming the real incident, with th
 refutation path proved separately), the promise machine ships with Laplace-smoothed
 reliability and a Brier-scored calibration curve, and the per-rule guardrail table
 falls out of the ledger for free. Where the plan and the result differ, the result
-did *more*, and `STATE.md` records it day by day.
+did *more*, and `FAILURES.md` records it day by day.
 
 One thing built but not fully wired: the **promise state machine is not threaded
 into batch resolution**. A placed voice call extracts a spoken commitment into a
 `Promise` and writes it to the ledger, but no simulated batch event carries a
 promise *history* from a prior call, so `EnvelopeContext.promise_state` is `"none"`
 for every batch event and S3 never fires on the measurement path. The seam is named
-in `STATE.md`, not hidden.
+here and in `DECISIONS.md`, not hidden.
 
 ## What is real but synthetic, and graded honestly
 
@@ -141,4 +141,5 @@ technical gap.
 ---
 
 For the full daily record of what broke and the mechanism added so it could not
-recur, see `FAILURES.md`. For what shipped each day, see `STATE.md`.
+recur, see `FAILURES.md`; it is organised by day and carries what shipped
+alongside what failed.

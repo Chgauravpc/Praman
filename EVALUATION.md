@@ -36,7 +36,7 @@ organic planner violation rate is **19.0%** event-weighted (**7.7%** per distinc
 signature) — almost all of it mandate debits caught by R1, which the payment-only
 batch never contained.
 
-**A discipline worth recording** (`STATE.md`, the headline section): the *first*
+**A discipline worth recording** (see `FAILURES.md`, Day 7): the *first*
 full-batch run — before any API key existed — printed C−B as +3.83pp [+0.93,+6.64],
 an interval **excluding zero on a provably-zero effect** (with no key, every arm-C
 plan was byte-identical to arm B's). That was not a bug — it is what "95%

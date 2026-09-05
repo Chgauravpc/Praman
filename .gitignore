@@ -35,3 +35,8 @@ venv/
 
 # local agent settings — not part of the public deliverable
 .claude/
+
+# presenter notes — my own prep for the pitch video, not a deliverable.
+# Kept on disk, out of the repo: it carries timings, what to click and what
+# not to say, none of which is part of what a reviewer is being asked to read.
+DEMO-SCRIPT.md

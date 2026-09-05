@@ -547,7 +547,9 @@ typed. `rules.GRADE_A_COUNT` / `GRADE_B_COUNT` are derived from `RULE_SOURCES`;
 `envelope/registry.py` derives the full rule-id list from the five modules that
 own the rules. Prose that states one of those counts — in a docstring, in
 `README.md`, in `STATE.md` — is parsed and checked against the derived value by
-`test_the_published_grade_counts_match_the_prose`.
+`test_the_published_grade_counts_match_the_prose`. (`STATE.md` is the private
+day-log and is not in this repo; the guard skips it when absent rather than
+failing, so the check degrades to the two public targets for a reviewer.)
 
 **Why.** Because the alternative was tried and failed twice in one day.
 
