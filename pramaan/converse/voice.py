@@ -393,7 +393,25 @@ SARVAM_TTS_CUSTOMER_SPEAKER = "aditya"
 #: concatenate into one playable file, where concatenated WAVs would carry a
 #: header mid-stream and break most players.
 SARVAM_TTS_CODEC = "mp3"
-SARVAM_STT_MODEL = "saaras:v2"
+#: STT model, corrected live on 2026-09-05. ``saaras:v2`` was carried here from
+#: the Day 7 draft and is **deprecated** -- the endpoint now 400s on it with
+#: ``body.model : Input should be 'saarika:v2.5', 'saaras:v3',
+#: 'saaras:v3-realtime', 'saaras:v4', 'saaras:v4-multispk', 'saarika:v1',
+#: 'saarika:v2' or 'saarika:flash'``. It went unnoticed because the shipped clip
+#: never runs the STT leg, which is exactly the failure mode the TTS constants
+#: above warn about: a value that is only correct until the vendor rotates it,
+#: in a path nothing exercises.
+#:
+#: ``saaras:v3``, ``saaras:v4`` and ``saarika:v2.5`` were all verified to
+#: transcribe the Hinglish demo line correctly. v3 is the direct successor and
+#: is what runs.
+#:
+#: **It returns Devanagari, not romanised Hinglish**, and no documented
+#: parameter changes that (``output_script``/``script`` were both tried and
+#: ignored). ``promises.extract_commitment`` matches Latin-script cues, so it
+#: returns is_promise=False on this output and the LLM extractor is the path
+#: that works here -- see ``report/server.py``'s live-call turn.
+SARVAM_STT_MODEL = "saaras:v3"
 
 
 class SarvamClient:

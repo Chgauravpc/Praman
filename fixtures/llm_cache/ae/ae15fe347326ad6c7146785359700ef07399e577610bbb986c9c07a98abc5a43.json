@@ -1,0 +1,20 @@
+{
+  "key": "ae15fe347326ad6c7146785359700ef07399e577610bbb986c9c07a98abc5a43",
+  "model": "openai/gpt-oss-20b",
+  "params": {
+    "max_tokens": 1024,
+    "schema": {
+      "type": "object"
+    },
+    "temperature": 0.0
+  },
+  "prompt": "You are extracting a payment commitment from one customer reply. The customer may write in Hinglish (Hindi-English code-switching).\n\nA promise needs a real commitment, not a vague acknowledgement. \"haan haan kal dekhta hoon\" (yeah yeah I'll look tomorrow) is NOT a promise -- there is no commitment, only an acknowledgement. \"Friday tak pakka kar dunga\" (I will definitely pay by Friday) IS a promise -- a specific date and a real commitment.\n\nThe conversation's current time is 2026-08-13T15:20:00+05:30. Resolve any relative date (\"kal\"/tomorrow, a weekday name) against it and reply with an absolute date.\n\nCustomer reply:\n\u0920\u0940\u0915 \u0939\u0948, \u092b\u094d\u0930\u093e\u0907\u0921\u0947 \u0924\u0915 \u092a\u0915\u094d\u0915\u093e \u0915\u0930 \u0926\u0942\u0901\u0917\u093e, \u092a\u0942\u0930\u093e \u0905\u092e\u093e\u0909\u0902\u091f\u0964\n\nReply with a single JSON object:\n{\"is_promise\": true/false, \"promised_date\": \"YYYY-MM-DDTHH:MM:SS+05:30\" or null, \"amount_paise\": 0 or null, \"confidence\": 0.0, \"rationale\": \"...\"}\n",
+  "provider": "groq",
+  "response": "{\"is_promise\":true,\"promised_date\":\"2026-08-14T00:00:00+05:30\",\"amount_paise\":null,\"confidence\":0.95,\"rationale\":\"The customer explicitly states '\u092b\u094d\u0930\u093e\u0907\u0921\u0947 \u0924\u0915 \u092a\u0915\u094d\u0915\u093e \u0915\u0930 \u0926\u0942\u0901\u0917\u093e', which is a definite promise to pay by Friday. The relative date 'Friday' is resolved to 2026-08-14 based on the current date 2026-08-13. No amount is specified, so amount_paise is null.\"}",
+  "tier": "fast",
+  "usage": {
+    "completion_tokens": 562,
+    "prompt_tokens": 324,
+    "total_tokens": 886
+  }
+}
