@@ -419,6 +419,125 @@ def read_rows(conn: sqlite3.Connection) -> List[Dict[str, Any]]:
     return rows
 
 
+#: The full ``DETECT`` payload, in a fixed order. Wider than
+#: ``ACTION_CSV_COLUMNS`` on purpose: this is the event *as it arrived*, before
+#: anything judged or acted on it, so it keeps the fields the outcome-spine
+#: export drops -- the raw cause signal, the channel the hour allows, the decay
+#: profile, and the action menu the event itself declares.
+DETECTED_CSV_COLUMNS: Tuple[str, ...] = (
+    "seq",
+    "ts",
+    "arm",
+    "event_id",
+    "counterparty_id",
+    "source_type",
+    "reason_class",
+    "cause_signal",
+    "segment",
+    "amount_band",
+    "amount_at_risk_paise",
+    "legal_context",
+    "channel_eligibility",
+    "hour_bucket",
+    "decay_profile",
+    "available_actions",
+    "external_ref",
+    "signature",
+)
+
+#: Fields whose distribution the dashboard draws. Each one is a dimension the
+#: envelope or the planner actually keys on, so the shape of the input explains
+#: the shape of everything downstream.
+DETECTED_FACETS: Tuple[str, ...] = (
+    "source_type",
+    "reason_class",
+    "segment",
+    "legal_context",
+    "channel_eligibility",
+    "hour_bucket",
+    "decay_profile",
+)
+
+
+def read_detected(conn: sqlite3.Connection) -> Dict[str, Any]:
+    """The batch as it arrived: one row per ``DETECT``, plus its distribution.
+
+    Spined on ``DETECT`` rather than ``OUTCOME``, which is the whole point. The
+    row-level export joins outcomes back to detections, so an event that was
+    never resolved cannot appear in it -- on the committed batch every event
+    resolves, but a view that *structurally* cannot show an unresolved event is
+    the wrong place to answer "what went in". This one counts detections and
+    reports the reconciliation against outcomes, so a gap would be visible
+    rather than invisible.
+    """
+    rows: List[Dict[str, Any]] = []
+    facets: Dict[str, Dict[str, int]] = {name: {} for name in DETECTED_FACETS}
+    bands: Dict[str, int] = {}
+    at_risk = 0
+    outcome_ids = set()
+
+    for row in conn.execute("SELECT * FROM ledger ORDER BY seq"):
+        kind = row["kind"]
+        if kind == "OUTCOME":
+            outcome_ids.add(_payload(row)["event_id"])
+            continue
+        if kind != "DETECT":
+            continue
+        payload = _payload(row)
+        rows.append(
+            {
+                "seq": int(row["seq"]),
+                "ts": row["ts"],
+                "arm": row["arm"],
+                "event_id": payload.get("event_id"),
+                "counterparty_id": payload.get("counterparty_id"),
+                "source_type": payload.get("source_type"),
+                "reason_class": payload.get("reason_class"),
+                "cause_signal": payload.get("cause_signal"),
+                "segment": payload.get("segment"),
+                "amount_band": payload.get("amount_band"),
+                "amount_at_risk_paise": int(payload.get("amount_at_risk_paise", 0)),
+                "legal_context": payload.get("legal_context"),
+                "channel_eligibility": payload.get("channel_eligibility"),
+                "hour_bucket": payload.get("hour_bucket"),
+                "decay_profile": payload.get("decay_profile"),
+                # A list in the payload; joined so one CSV cell holds it.
+                "available_actions": " ".join(payload.get("available_actions") or ()),
+                "external_ref": payload.get("external_ref"),
+                "signature": payload.get("signature"),
+            }
+        )
+        at_risk += int(payload.get("amount_at_risk_paise", 0))
+        _bump(bands, str(payload.get("amount_band")))
+        for name in DETECTED_FACETS:
+            _bump(facets[name], payload.get(name))
+
+    detected_ids = {r["event_id"] for r in rows}
+    return {
+        "rows": rows,
+        "count": len(rows),
+        "at_risk_paise": at_risk,
+        "facets": facets,
+        "amount_bands": bands,
+        # The reconciliation. Equal counts and an empty unresolved set is the
+        # claim; printing it is what makes it checkable.
+        "resolved": len(detected_ids & outcome_ids),
+        "unresolved": sorted(detected_ids - outcome_ids)[:20],
+        "unresolved_count": len(detected_ids - outcome_ids),
+    }
+
+
+def write_detected_csv(rows: Sequence[Dict[str, Any]], path: Path) -> Path:
+    """The input export. Same quoting and determinism rules as the action CSV."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle, lineterminator="\n", quoting=csv.QUOTE_MINIMAL)
+        writer.writerow(DETECTED_CSV_COLUMNS)
+        for row in rows:
+            writer.writerow([_csv_cell(row.get(c)) for c in DETECTED_CSV_COLUMNS])
+    return path
+
+
 def _csv_cell(value: Any) -> str:
     """Render one cell as text. Quoting is the writer's job, not this function's.
 
@@ -771,11 +890,16 @@ def build_snapshot(
     try:
         ledger = read_ledger(conn)
         rows = read_rows(conn) if actions_csv is not None else []
+        detected = read_detected(conn) if actions_csv is not None else None
     finally:
         conn.close()
 
     if actions_csv is not None:
         write_actions_csv(rows, actions_csv)
+    detected_csv = None
+    if detected is not None and actions_csv is not None:
+        detected_csv = actions_csv.with_name("detected.csv")
+        write_detected_csv(detected["rows"], detected_csv)
 
     if not ledger["arms"]:
         raise ValueError(
@@ -808,6 +932,20 @@ def build_snapshot(
             "rows_file": actions_csv.name if actions_csv is not None else None,
             "rows_exported": len(rows),
             "rows_columns": list(ACTION_CSV_COLUMNS),
+            "detected_file": detected_csv.name if detected_csv is not None else None,
+            "detected_columns": list(DETECTED_CSV_COLUMNS),
+        },
+        # The batch as it arrived, before anything judged it. Distributions
+        # rather than 6,000 rows: the individual events are already browsable
+        # in the row table, and what this answers is "what shape was the input".
+        "detected": None if detected is None else {
+            "count": detected["count"],
+            "at_risk_paise": detected["at_risk_paise"],
+            "facets": detected["facets"],
+            "amount_bands": detected["amount_bands"],
+            "resolved": detected["resolved"],
+            "unresolved_count": detected["unresolved_count"],
+            "unresolved": detected["unresolved"],
         },
         "headline": headline,
         "ledger": {
@@ -890,6 +1028,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ))
     print("  why panels    %d" % len(snapshot["why"]))
     print("  wrote         %s" % out.name)
+    print("  detected      %s (%s events, %d columns)" % (
+        snapshot["provenance"]["detected_file"],
+        snapshot["detected"]["count"] if snapshot["detected"] else 0,
+        len(DETECTED_CSV_COLUMNS),
+    ))
     print("  rows          %s (%s events, %d columns)" % (
         snapshot["provenance"]["rows_file"],
         snapshot["provenance"]["rows_exported"],

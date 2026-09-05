@@ -124,6 +124,21 @@
     <div id="categories"></div>
   </section>
 
+  <section id="detected-section" hidden>
+    <h2>What came in</h2>
+    <p class="section-note">The batch as it arrived, before the envelope judged
+      anything &mdash; read from the <code>DETECT</code> rows, not from outcomes.
+      That distinction is the point: the row table below is spined on
+      <code>OUTCOME</code>, so an event that was never resolved structurally
+      cannot appear in it. This is spined on detections, and reports the
+      reconciliation, so a gap would show rather than hide.</p>
+
+    <dl class="rows-summary" id="detected-summary"></dl>
+    <div class="detected-grid" id="detected-facets"></div>
+
+    <p class="section-note" id="detected-foot"></p>
+  </section>
+
   <section id="rows-section" hidden>
     <h2>Every row</h2>
     <p class="section-note">One line per resolved event, joined across its

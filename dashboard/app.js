@@ -329,6 +329,80 @@ function renderWhy(panels) {
   });
 }
 
+/* -- what came in ------------------------------------------------------ */
+
+var FACET_CAPTION = {
+  source_type: 'Source adapter — which of the five detected it',
+  reason_class: 'Reason class — what the taxonomy made of the raw code',
+  segment: 'Segment',
+  legal_context: 'Legal context — service, collection or promotional',
+  channel_eligibility: 'Channel eligibility — what the hour and consent allow',
+  hour_bucket: 'Hour bucket — each boundary is a regulatory edge',
+  decay_profile: 'Decay profile — how fast the money goes cold',
+};
+
+function renderDetected(detected, provenance) {
+  if (!detected) return false;
+
+  var summary = document.getElementById('detected-summary');
+  summary.textContent = '';
+  [
+    ['events detected', count(detected.count)],
+    ['value at risk', rupees(detected.at_risk_paise)],
+    ['resolved to an outcome', count(detected.resolved)],
+    ['unresolved', count(detected.unresolved_count)],
+  ].forEach(function (pair) {
+    var wrap = el('div', 'pair');
+    wrap.appendChild(el('dt', null, pair[0]));
+    wrap.appendChild(el('dd', null, pair[1]));
+    summary.appendChild(wrap);
+  });
+
+  var host = document.getElementById('detected-facets');
+  host.textContent = '';
+  Object.keys(FACET_CAPTION).forEach(function (name) {
+    var counts = detected.facets[name];
+    if (!counts || !Object.keys(counts).length) return;
+    var card = el('div', 'facet');
+    card.appendChild(el('h3', null, name));
+    card.appendChild(el('p', 'section-note', FACET_CAPTION[name]));
+    var bars = el('div', 'bars compact');
+    bars.id = 'facet-' + name;
+    card.appendChild(bars);
+    host.appendChild(card);
+    renderBars('facet-' + name, counts, null);
+  });
+
+  var foot = document.getElementById('detected-foot');
+  foot.textContent = '';
+  /* The reconciliation, stated either way round. Equal counts are the claim;
+   * an inequality names the events that went missing rather than rounding the
+   * difference away. */
+  if (detected.unresolved_count === 0) {
+    foot.appendChild(document.createTextNode(
+      'Every one of the ' + count(detected.count) + ' detected events resolved to an ' +
+      'OUTCOME row — detections and outcomes reconcile exactly, so nothing was ' +
+      'dropped between the two. '));
+  } else {
+    foot.appendChild(document.createTextNode(
+      count(detected.unresolved_count) + ' detected events never reached an OUTCOME ' +
+      'row (' + detected.unresolved.slice(0, 5).join(', ') + '…). '));
+  }
+  if (provenance.detected_file) {
+    foot.appendChild(document.createTextNode('The full input export is '));
+    var link = el('a', 'log-path', provenance.detected_file);
+    link.href = '../build/' + provenance.detected_file;
+    link.target = '_blank';
+    link.rel = 'noopener';
+    foot.appendChild(link);
+    foot.appendChild(document.createTextNode(
+      ' — ' + provenance.detected_columns.length + ' columns per event, including the ' +
+      'raw cause signal and the action menu each event declares, which the ' +
+      'outcome-spined export drops.'));
+  }
+  return true;
+}
+
 /* -- row-level data ---------------------------------------------------- */
 
 /* Rendering 6,000 rows x 20 columns is 120,000 DOM nodes and a visibly janky
@@ -1344,6 +1418,8 @@ function render(data) {
 
     renderCategories(data.by_category);
     show('category-section');
+
+    if (renderDetected(data.detected, data.provenance)) show('detected-section');
 
     initRows(data.provenance);
 

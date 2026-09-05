@@ -1012,3 +1012,30 @@ table.rows td .false { color: var(--dim); }
 
   .tile .label { min-height: 0; }
 }
+
+/* -- what came in ------------------------------------------------------ */
+
+.detected-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(310px, 1fr));
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.facet {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: .9rem 1.05rem;
+}
+
+.facet h3 {
+  margin: 0 0 .2rem;
+  font-family: var(--mono);
+  font-size: .78rem;
+  color: var(--accent);
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.facet .section-note { margin-bottom: .7rem; font-size: .76rem; }

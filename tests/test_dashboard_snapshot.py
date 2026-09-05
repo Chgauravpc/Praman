@@ -391,6 +391,19 @@ def test_metrics_written_to_disk_round_trip_unchanged(metrics, tmp_path: Path):
 
 
 @pytest.fixture(scope="module")
+def snap_with_csv(ledger_db: Path, tmp_path_factory) -> dict:
+    """A snapshot built with the exports on, so ``detected`` is populated.
+
+    The plain ``snap`` fixture passes ``actions_csv=None`` to keep the common
+    tests fast; the input view only exists when an export path is given.
+    """
+    out = tmp_path_factory.mktemp("detected") / "actions.csv"
+    return S.build_snapshot(
+        ledger_db, metrics_path=None, golden_path=GOLDEN, actions_csv=out
+    )
+
+
+@pytest.fixture(scope="module")
 def csv_path(ledger_db: Path, tmp_path_factory) -> Path:
     out = tmp_path_factory.mktemp("csv") / "actions.csv"
     S.build_snapshot(
@@ -513,6 +526,116 @@ def test_the_snapshot_json_does_not_embed_the_rows(snap: dict):
     """The rows live in the CSV precisely so the JSON stays small enough to
     fetch on every page load. A ``rows`` key here would undo that."""
     assert "rows" not in snap
+
+
+# --------------------------------------------------------------------------
+# The input export -- spined on DETECT, not on OUTCOME
+# --------------------------------------------------------------------------
+
+
+def test_the_detected_view_counts_detections_not_outcomes(ledger_db: Path, snap_with_csv):
+    """The whole reason this view exists separately from the row export.
+
+    ``read_rows`` is spined on ``OUTCOME`` and joins detections back to it, so a
+    detected event that never resolved cannot appear in it -- the shape of the
+    query hides exactly the failure someone would want to see. This one counts
+    ``DETECT`` rows directly.
+    """
+    conn = sqlite3.connect(ledger_db)
+    detects = conn.execute(
+        "SELECT COUNT(*) FROM ledger WHERE kind = 'DETECT'"
+    ).fetchone()[0]
+    conn.close()
+    assert snap_with_csv["detected"]["count"] == detects
+
+
+def test_the_reconciliation_is_reported_both_ways(snap_with_csv):
+    """Resolved plus unresolved accounts for every detection, with no remainder."""
+    d = snap_with_csv["detected"]
+    assert d["resolved"] + d["unresolved_count"] == d["count"]
+    assert len(d["unresolved"]) <= 20, "the sample list is capped, not the count"
+
+
+def test_an_unresolved_detection_is_surfaced_not_swallowed(tmp_path: Path):
+    """Append a DETECT with no OUTCOME and assert the view names it.
+
+    Built deliberately rather than hoped for: on the committed batch every event
+    resolves, so the interesting branch would otherwise never execute and the
+    reconciliation would be a claim no test had ever seen fail.
+    """
+    path = tmp_path / "gap.db"
+    conn = connect(path)
+    ledger = Ledger(conn)
+    ts = "2026-08-03T10:00:00+05:30"
+    for event_id, with_outcome in (("evt_ok", True), ("evt_orphan", False)):
+        ledger.append("DETECT", ts=ts, arm="A", payload={
+            "event_id": event_id, "counterparty_id": "cp_1", "source_type": "payment",
+            "reason_class": "FUNDS", "cause_signal": "insufficient_balance",
+            "segment": "metro", "amount_band": 2, "amount_at_risk_paise": 1000,
+            "legal_context": "service", "channel_eligibility": "full",
+            "hour_bucket": "business", "decay_profile": "days",
+            "available_actions": ["ACT_RETRY"], "external_ref": "pay_x",
+            "signature": "reason_class=FUNDS",
+        })
+        if with_outcome:
+            ledger.append("OUTCOME", ts=ts, arm="A", payload={
+                "event_id": event_id, "action": "ACT_RETRY", "channel": "none",
+                "amount_at_risk_paise": 1000, "amount_recovered_paise": 0,
+                "recovered": False, "contacted": False, "cause": "none",
+            })
+    conn.commit()
+    conn.close()
+
+    ro = S.connect_readonly(path)
+    try:
+        detected = S.read_detected(ro)
+    finally:
+        ro.close()
+
+    assert detected["count"] == 2
+    assert detected["resolved"] == 1
+    assert detected["unresolved_count"] == 1
+    assert detected["unresolved"] == ["evt_orphan"]
+
+
+def test_the_detected_csv_is_wider_than_the_action_csv():
+    """It keeps the input fields the outcome-spined export drops."""
+    extra = set(S.DETECTED_CSV_COLUMNS) - set(S.ACTION_CSV_COLUMNS)
+    for field in ("cause_signal", "decay_profile", "available_actions",
+                  "external_ref", "signature"):
+        assert field in extra, field
+
+
+def test_the_detected_csv_round_trips(ledger_db: Path, tmp_path: Path):
+    out = tmp_path / "detected.csv"
+    ro = S.connect_readonly(ledger_db)
+    try:
+        detected = S.read_detected(ro)
+    finally:
+        ro.close()
+    S.write_detected_csv(detected["rows"], out)
+    with open(out, newline="", encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle))
+    assert len(rows) == detected["count"]
+    assert tuple(rows[0]) == S.DETECTED_CSV_COLUMNS
+
+
+def test_the_facet_totals_equal_the_detection_count(snap_with_csv):
+    """Every event lands in exactly one bucket of every facet.
+
+    A facet summing to less than the total means a payload field was missing and
+    silently dropped; more would mean an event double-counted.
+    """
+    d = snap_with_csv["detected"]
+    for name, counts in d["facets"].items():
+        assert sum(counts.values()) == d["count"], name
+
+
+def test_the_detected_view_carries_no_latent_truth(snap_with_csv):
+    """The input export is the widest artifact here, so ADR-010 matters most."""
+    for column in S.DETECTED_CSV_COLUMNS:
+        for banned in ("would_recover", "self_recovers", "has_intent", "latent"):
+            assert banned not in column, column
 
 
 def test_non_finite_values_become_null_rather_than_crashing():
