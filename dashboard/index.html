@@ -1,0 +1,253 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pramaan — recovery dashboard</title>
+<link rel="stylesheet" href="style.css">
+
+<!--
+  Static. No framework, no build step, no dependency, no network call beyond
+  fetching build/dashboard.json from the same origin. DASHBOARD-PLAN.md §2: a
+  build step is one more thing that can fail keyless reproduction, and this is a
+  demo-day artifact rather than a maintained product.
+
+  Everything rendered here comes from `make dashboard`. Nothing is computed in
+  the browser except formatting -- no rates, no contrasts, no totals. If a
+  number is not in the JSON, it does not appear.
+-->
+
+<body>
+<main id="app">
+  <header class="masthead">
+    <div>
+      <h1>Pramaan</h1>
+      <p class="tagline">Revenue recovery, with the receipts. Every figure below
+        is read from a hash-chained ledger or from the metrics object the run
+        printed &mdash; none of it is recomputed here.</p>
+      <a class="arch-link" href="architecture.html">See the architecture &rarr;</a>
+    </div>
+    <dl class="provenance" id="provenance"></dl>
+  </header>
+
+  <div id="error" class="error" hidden></div>
+
+  <section id="run-section" class="no-print" hidden>
+    <h2>Run it</h2>
+    <p class="section-note">These buttons run the real CLI &mdash; the same
+      <code>python -m pramaan.cli&hellip;</code> a reviewer would type, with
+      <code>PRAMAAN_LLM_OFFLINE=1</code> forced, so no run spends a token or
+      touches a network. Output below is that process's stdout, streamed. When it
+      finishes, the ledger is re-aggregated and every number on this page updates
+      in place.</p>
+
+    <div id="run-buttons" class="run-buttons"></div>
+
+    <div class="run-state">
+      <div class="run-meter"><div id="run-bar" class="run-bar"></div></div>
+      <div class="run-meta">
+        <span id="run-status" class="run-badge idle">idle</span>
+        <span id="run-elapsed" class="rows-status"></span>
+        <span id="run-stage" class="rows-status"></span>
+      </div>
+    </div>
+
+    <pre id="run-log" class="run-log" hidden></pre>
+  </section>
+
+  <section id="replay-section" class="no-print" hidden>
+    <h2>Watch the envelope decide</h2>
+    <p class="section-note">A replay of the run's own ledger rows, one event at a
+      time, straight from <code>build/actions.csv</code>. Nothing is simulated
+      here and nothing is recomputed &mdash; these are the decisions that were
+      already made and hashed, played back at a readable speed so the loop is
+      visible rather than merely tabulated.</p>
+
+    <div class="replay-controls">
+      <button id="replay-start" type="button" class="btn primary">Start replay</button>
+      <button id="replay-stop" type="button" class="btn" disabled>Stop</button>
+      <label>Speed
+        <select id="replay-speed">
+          <option value="200">slow — 5/sec</option>
+          <option value="80" selected>normal — 12/sec</option>
+          <option value="25">fast — 40/sec</option>
+        </select>
+      </label>
+      <span id="replay-progress" class="rows-status"></span>
+    </div>
+
+    <div class="replay-counters" id="replay-counters"></div>
+    <div class="replay-feed" id="replay-feed"></div>
+  </section>
+
+  <section id="headline-section" hidden>
+    <h2>The contrast</h2>
+    <p class="section-note">Each tile names its arms and its population. A lift
+      measured on the pre-specified actioned subset is a different quantity from
+      one measured over the whole batch; showing either under the other's label
+      would be a category error, so the label is part of the tile.</p>
+    <div class="tiles" id="contrast-tiles"></div>
+  </section>
+
+  <section id="ledger-section" hidden>
+    <h2>What the ledger recorded</h2>
+    <p class="section-note">Counts of rows that exist, per arm. Arm A is the
+      randomised holdout and takes no action &mdash; its contact count is zero by
+      construction, not by accident.</p>
+    <div class="tiles" id="arm-tiles"></div>
+
+    <div class="split">
+      <div>
+        <h3>Envelope rulings</h3>
+        <p class="section-note">Every proposed action passed the policy envelope.
+          An <em>amend</em> is the envelope changing the action rather than
+          waving it through.</p>
+        <div id="gate-decisions" class="bars"></div>
+        <h3>Rules fired</h3>
+        <div id="gate-rules" class="bars compact"></div>
+      </div>
+      <div>
+        <h3>Actions taken</h3>
+        <p class="section-note">From <code>OUTCOME.action</code>. There are no
+          <code>ACTION</code> rows in this batch &mdash; those are written only by
+          a live Razorpay run &mdash; so nothing here is sourced from them.</p>
+        <div id="action-mix" class="bars"></div>
+        <h3>Why the money came back</h3>
+        <p class="section-note">The resolver's cause for each recovered event.
+          Organic recovery is the reason the holdout arm exists at all.</p>
+        <div id="cause-mix" class="bars compact"></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="category-section" hidden>
+    <h2>Recovery by category</h2>
+    <p class="section-note" id="category-note"></p>
+    <div id="categories"></div>
+  </section>
+
+  <section id="rows-section" hidden>
+    <h2>Every row</h2>
+    <p class="section-note">One line per resolved event, joined across its
+      <code>DETECT</code>, <code>GATE</code>, <code>OUTCOME</code> and
+      <code>EXCEPTION</code> ledger rows on <code>event_id</code> &mdash; the only
+      key they share. This is the same <code>build/actions.csv</code> that
+      <code>make dashboard</code> writes, fetched on demand rather than bundled
+      into the page: as JSON these rows are ~2.6&nbsp;MB, and most viewers never
+      open this section. <strong>No latent field is included</strong> &mdash; the
+      counterfactual answer key stays in its own table, out of anything a
+      reviewer can download.</p>
+
+    <div class="rows-toolbar no-print">
+      <button id="rows-load" type="button" class="btn primary">Load rows</button>
+      <span id="rows-status" class="rows-status"></span>
+    </div>
+
+    <div id="rows-ui" hidden>
+      <div class="filters no-print">
+        <label>Arm <select id="f-arm"><option value="">all</option></select></label>
+        <label>Type <select id="f-source"><option value="">all</option></select></label>
+        <label>Action <select id="f-action"><option value="">all</option></select></label>
+        <label>Gate <select id="f-gate"><option value="">all</option></select></label>
+        <label>Outcome
+          <select id="f-recovered">
+            <option value="">all</option>
+            <option value="true">recovered</option>
+            <option value="false">not recovered</option>
+          </select>
+        </label>
+        <label>Refused only
+          <input type="checkbox" id="f-exception">
+        </label>
+        <label class="grow">Search
+          <input type="search" id="f-search" placeholder="event_id or counterparty_id">
+        </label>
+        <button id="f-reset" type="button" class="btn">Reset</button>
+      </div>
+
+      <dl id="rows-summary" class="rows-summary"></dl>
+
+      <div class="rows-actions no-print">
+        <button id="rows-csv" type="button" class="btn primary">Download CSV</button>
+        <button id="rows-pdf" type="button" class="btn">Save as PDF</button>
+        <span class="hint">CSV exports every filtered row. PDF prints the visible
+          rows plus the summary above &mdash; use your browser's
+          &ldquo;Save as PDF&rdquo; destination.</span>
+      </div>
+
+      <div class="table-scroll">
+        <table class="rows" id="rows-table"></table>
+      </div>
+      <p id="rows-truncated" class="section-note" hidden></p>
+    </div>
+  </section>
+
+  <section id="voice-section" hidden>
+    <h2>The recovery call</h2>
+    <p class="section-note">A Hinglish collection call, gated by the same policy
+      envelope as every other action. The audio is <strong>real Sarvam TTS</strong>
+      &mdash; two voices, synthesised through Sarvam's batch endpoint. The
+      customer's line becomes a structured promise on the hash chain, which is
+      what a recovery call is actually <em>for</em>. <strong>Honest scope:</strong>
+      the customer's turns are a scripted transcript, not transcribed audio; the
+      Sarvam STT leg is implemented and verified but is not exercised in this
+      clip.</p>
+
+    <div class="voice-grid">
+      <div class="voice-panel">
+        <h3>Listen</h3>
+        <audio id="voice-audio" controls preload="none"></audio>
+        <dl class="fields" id="voice-meta"></dl>
+      </div>
+      <div class="voice-panel">
+        <h3>Transcript, as hashed</h3>
+        <div class="voice-turns" id="voice-turns"></div>
+      </div>
+    </div>
+
+    <div class="voice-promise" id="voice-promise"></div>
+  </section>
+
+  <section id="live-call-section" class="no-print" hidden>
+    <h2>Talk to it</h2>
+    <p class="section-note">The clip above is a <em>scripted</em> dialogue &mdash;
+      both sides are fixed text, rendered by Sarvam TTS, so the artifact is
+      byte-reproducible with no key. <strong>This is not that.</strong> Hold the
+      button, speak Hinglish, and one turn runs:
+      <code>your voice → Sarvam STT → the turn-policy LLM → Sarvam TTS → a reply
+      you hear</code>. The agent's words are generated against the transcript so
+      far, not chosen from a list. This is the one path that <strong>cannot</strong>
+      be keyless &mdash; a real conversation can't be cached before it happens
+      &mdash; so it needs <code>SARVAM_API_KEY</code> plus an LLM key, and it
+      spends money per turn.</p>
+
+    <div class="call-controls">
+      <button id="call-talk" type="button" class="btn primary talk">Hold to speak</button>
+      <button id="call-reset" type="button" class="btn">New call</button>
+      <span id="call-status" class="rows-status">idle</span>
+    </div>
+
+    <div class="call-ruling" id="call-ruling" hidden></div>
+    <div class="voice-turns" id="call-turns"></div>
+    <audio id="call-audio" hidden></audio>
+    <div class="voice-promise" id="call-promise" hidden></div>
+  </section>
+
+  <section id="why-section" hidden>
+    <h2>Why did the agent do this?</h2>
+    <p class="section-note">Real rows from <code>tests/golden/all_kinds.jsonl</code>,
+      the one committed chain containing every ledger kind. They are
+      <strong>not</strong> one customer's story &mdash; the ledger is not keyed for
+      that, and inventing the links would be the one thing this dashboard must
+      not do. Each panel carries its own sequence number and row hash so it can
+      be found and checked.</p>
+    <div id="why-panels"></div>
+  </section>
+
+  <footer>
+    <p>Generated by <code>make dashboard</code>. Read-only: this page fetches one
+      JSON file and renders it. It cannot reach the planner, the envelope, the
+      executor, or a model.</p>
+  </footer>
+</main>
+
+<script src="app.js"></script>
+</body>

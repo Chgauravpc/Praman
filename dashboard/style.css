@@ -1,0 +1,1014 @@
+/* Pramaan dashboard. Hand-rolled, no framework, no charting library.
+ *
+ * The bars are CSS width percentages over a flex row -- five of them, in the
+ * spirit of the brief's ASCII-bar mockup. A charting library would be a build
+ * step or a CDN fetch, and both are things that can fail on demo day in a room
+ * with bad wifi.
+ *
+ * Dark by default because this is screenshotted for a pitch video against a
+ * terminal, and a white page between two terminal frames reads as a different
+ * project. */
+
+:root {
+  --bg: #0d1117;
+  --panel: #161b22;
+  --panel-2: #1c2230;
+  --line: #2a3240;
+  --ink: #e6edf3;
+  --muted: #8b949e;
+  --dim: #6e7681;
+  --accent: #2f81f7;
+  --good: #3fb950;
+  --warn: #d29922;
+  --bad: #f85149;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+          "Liberation Mono", monospace;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  padding: 0 0 4rem;
+  background: var(--bg);
+  color: var(--ink);
+  font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+        Helvetica, Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+main { max-width: 1120px; margin: 0 auto; padding: 0 1.5rem; }
+
+/* -- masthead ---------------------------------------------------------- */
+
+.masthead {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2rem;
+  align-items: flex-start;
+  justify-content: space-between;
+  padding: 2.5rem 0 1.75rem;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 2rem;
+}
+
+h1 {
+  margin: 0 0 .4rem;
+  font-size: 1.9rem;
+  letter-spacing: -.02em;
+}
+
+.tagline { margin: 0; max-width: 46ch; color: var(--muted); font-size: .92rem; }
+
+.provenance {
+  margin: 0;
+  display: grid;
+  grid-template-columns: auto auto;
+  gap: .28rem 1rem;
+  font-family: var(--mono);
+  font-size: .74rem;
+  color: var(--dim);
+  align-content: start;
+}
+
+.provenance dt { color: var(--dim); }
+.provenance dd { margin: 0; color: var(--muted); }
+
+.arch-link {
+  display: inline-block;
+  margin-top: .7rem;
+  color: var(--accent);
+  font-size: .85rem;
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
+}
+.arch-link:hover, .arch-link:focus { border-bottom-color: var(--accent); }
+
+/* -- sections ---------------------------------------------------------- */
+
+section { margin-bottom: 2.75rem; }
+
+h2 {
+  font-size: 1.05rem;
+  text-transform: uppercase;
+  letter-spacing: .09em;
+  color: var(--muted);
+  margin: 0 0 .5rem;
+  font-weight: 600;
+}
+
+h3 {
+  font-size: .82rem;
+  text-transform: uppercase;
+  letter-spacing: .07em;
+  color: var(--dim);
+  margin: 1.5rem 0 .6rem;
+  font-weight: 600;
+}
+
+.section-note {
+  margin: 0 0 1.1rem;
+  max-width: 78ch;
+  color: var(--muted);
+  font-size: .86rem;
+}
+
+.split {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 0 2.5rem;
+}
+
+/* -- tiles ------------------------------------------------------------- */
+
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(232px, 1fr));
+  gap: 1rem;
+}
+
+.tile {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 1rem 1.1rem 1.05rem;
+}
+
+.tile .label {
+  font-size: .72rem;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  color: var(--dim);
+  margin-bottom: .45rem;
+  /* Two lines' worth, always. Some contrast captions wrap and some do not, and
+   * without a floor the headline figures sit at different heights across the
+   * row -- which reads as sloppiness in the one screenshot most likely to end
+   * up in the pitch video. */
+  min-height: 3.1em; /* two lines at the 1.55 body line-height, in label ems */
+}
+
+.tile .value {
+  font-family: var(--mono);
+  font-size: 1.6rem;
+  line-height: 1.15;
+  letter-spacing: -.02em;
+}
+
+.tile .value.pos { color: var(--good); }
+.tile .value.neg { color: var(--bad); }
+
+.tile .sub {
+  margin-top: .45rem;
+  font-family: var(--mono);
+  font-size: .74rem;
+  color: var(--muted);
+  /* The subtitles are built with newlines and inserted via textContent, which
+   * does not turn "\n" into a break. Without this they collapse onto one
+   * unreadable line. */
+  white-space: pre-line;
+}
+
+/* The population caveat. Deliberately not a footnote: the whole point is that
+ * it travels with the number it qualifies. */
+.tile .population {
+  margin-top: .6rem;
+  padding-top: .55rem;
+  border-top: 1px solid var(--line);
+  font-size: .73rem;
+  color: var(--dim);
+}
+
+.tile .population .flag {
+  display: inline-block;
+  padding: .05rem .4rem;
+  border-radius: 3px;
+  background: rgba(210, 153, 34, .14);
+  color: var(--warn);
+  font-family: var(--mono);
+  font-size: .68rem;
+  margin-right: .35rem;
+}
+
+.tile .population .flag.full {
+  background: rgba(47, 129, 247, .14);
+  color: var(--accent);
+}
+
+/* -- bars -------------------------------------------------------------- */
+
+.bars { display: flex; flex-direction: column; gap: .5rem; margin-bottom: .5rem; }
+
+.bar-row {
+  display: grid;
+  grid-template-columns: 10.5rem 1fr 5.5rem;
+  align-items: center;
+  gap: .75rem;
+  font-family: var(--mono);
+  font-size: .78rem;
+}
+
+.bars.compact .bar-row { grid-template-columns: 5rem 1fr 4rem; font-size: .72rem; }
+
+.bar-row .name { color: var(--muted); overflow: hidden; text-overflow: ellipsis; }
+.bar-row .count { text-align: right; color: var(--ink); }
+
+.track {
+  background: var(--panel-2);
+  border-radius: 3px;
+  height: 15px;
+  overflow: hidden;
+}
+
+.fill { height: 100%; background: var(--accent); border-radius: 3px; }
+.fill.allow { background: var(--good); }
+.fill.amend { background: var(--warn); }
+.fill.reject { background: var(--bad); }
+.fill.zero { background: var(--line); }
+
+/* -- categories -------------------------------------------------------- */
+
+.category {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 1.1rem 1.2rem;
+  margin-bottom: 1rem;
+}
+
+.category h3 { margin-top: 0; color: var(--ink); font-size: .95rem; }
+
+table.arms { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: .78rem; }
+table.arms th, table.arms td { text-align: right; padding: .4rem .6rem; border-bottom: 1px solid var(--line); }
+table.arms th:first-child, table.arms td:first-child { text-align: left; }
+table.arms th { color: var(--dim); font-weight: 600; text-transform: uppercase; font-size: .68rem; letter-spacing: .06em; }
+table.arms tr:last-child td { border-bottom: none; }
+
+/* -- why panels -------------------------------------------------------- */
+
+.why {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--accent);
+  border-radius: 6px;
+  padding: 1rem 1.2rem;
+  margin-bottom: .9rem;
+}
+
+.why.receipt { border-left-color: var(--warn); }
+.why.action { border-left-color: var(--good); }
+
+.why-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: .6rem;
+  margin-bottom: .7rem;
+}
+
+.why-kind {
+  font-family: var(--mono);
+  font-size: .7rem;
+  letter-spacing: .06em;
+  padding: .1rem .45rem;
+  border-radius: 3px;
+  background: var(--panel-2);
+  color: var(--accent);
+}
+
+.why-caption { font-size: .95rem; color: var(--ink); }
+
+.why-ref {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: .68rem;
+  color: var(--dim);
+}
+
+.fields { display: grid; grid-template-columns: 12rem 1fr; gap: .35rem 1rem; }
+
+.fields dt {
+  font-family: var(--mono);
+  font-size: .74rem;
+  color: var(--dim);
+}
+
+.fields dd {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: .76rem;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.fields dd.quote {
+  font-family: inherit;
+  font-size: .88rem;
+  font-style: italic;
+  color: var(--good);
+}
+
+.fields dd .false { color: var(--bad); }
+.fields dd .true { color: var(--good); }
+.fields dd ul { margin: 0; padding-left: 1.1rem; }
+
+/* -- error / footer ---------------------------------------------------- */
+
+.error {
+  background: rgba(248, 81, 73, .08);
+  border: 1px solid rgba(248, 81, 73, .35);
+  border-radius: 8px;
+  padding: 1.2rem 1.4rem;
+  margin: 2rem 0;
+}
+
+.error h2 { color: var(--bad); margin-bottom: .6rem; }
+.error pre {
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: .8rem 1rem;
+  overflow-x: auto;
+  font-family: var(--mono);
+  font-size: .8rem;
+  color: var(--ink);
+}
+
+footer {
+  border-top: 1px solid var(--line);
+  padding-top: 1.2rem;
+  color: var(--dim);
+  font-size: .8rem;
+}
+
+code {
+  font-family: var(--mono);
+  font-size: .92em;
+  background: var(--panel-2);
+  padding: .08rem .3rem;
+  border-radius: 3px;
+}
+
+/* Wide content scrolls inside its own container. */
+.table-scroll { overflow-x: auto; }
+
+/* -- run panel --------------------------------------------------------- */
+
+.run-buttons {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: .75rem;
+  margin-bottom: 1.25rem;
+}
+
+.run-card {
+  display: flex;
+  flex-direction: column;
+  gap: .3rem;
+  text-align: left;
+  font: inherit;
+  padding: .85rem 1rem;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--accent);
+  border-radius: 7px;
+  color: var(--ink);
+  cursor: pointer;
+  transition: background .12s, border-color .12s;
+}
+
+.run-card:hover:not(:disabled) { background: var(--panel-2); border-color: var(--accent); }
+.run-card:disabled { opacity: .45; cursor: default; }
+.run-card.active { border-left-color: var(--warn); background: var(--panel-2); }
+
+.run-id {
+  font-family: var(--mono);
+  font-size: .8rem;
+  color: var(--accent);
+}
+
+.run-label { font-size: .82rem; color: var(--muted); }
+
+.run-cost {
+  font-family: var(--mono);
+  font-size: .68rem;
+  color: var(--dim);
+}
+
+.run-state { margin-bottom: .8rem; }
+
+.run-meter {
+  height: 4px;
+  background: var(--panel-2);
+  border-radius: 2px;
+  overflow: hidden;
+  margin-bottom: .5rem;
+}
+
+.run-bar {
+  height: 100%;
+  width: 0;
+  background: var(--accent);
+  transition: width .35s ease-out;
+}
+
+.run-meta { display: flex; flex-wrap: wrap; gap: .75rem; align-items: center; }
+
+.run-badge {
+  font-family: var(--mono);
+  font-size: .68rem;
+  text-transform: uppercase;
+  letter-spacing: .07em;
+  padding: .12rem .5rem;
+  border-radius: 3px;
+  background: var(--panel-2);
+  color: var(--dim);
+}
+
+.run-badge.running { background: rgba(47, 129, 247, .16); color: var(--accent); }
+.run-badge.done    { background: rgba(63, 185, 80, .14);  color: var(--good); }
+.run-badge.failed  { background: rgba(248, 81, 73, .14);  color: var(--bad); }
+
+.run-log {
+  margin: 0;
+  max-height: 19rem;
+  overflow-y: auto;
+  padding: .9rem 1.1rem;
+  background: #07090d;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-family: var(--mono);
+  font-size: .74rem;
+  line-height: 1.5;
+  color: var(--muted);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* Milestone lines, tinted so the phases of a run are legible while it scrolls
+ * past. Everything else stays muted -- the point is that the eye can find the
+ * gate verdicts and the headline in a wall of output. */
+.run-log .log-sense    { color: var(--ink); }
+.run-log .log-envelope { color: var(--warn); }
+.run-log .log-ledger   { color: var(--accent); }
+.run-log .log-measure  { color: var(--ink); font-weight: 600; }
+.run-log .log-done     { color: var(--good); font-weight: 600; }
+.run-log .log-fail     { color: var(--bad); font-weight: 600; }
+
+/* A completed run re-renders the tiles in place; without a cue the change is
+ * easy to miss on camera, so the updated sections glow once. */
+@keyframes refreshed {
+  0%   { box-shadow: 0 0 0 0 rgba(47, 129, 247, .55); }
+  100% { box-shadow: 0 0 0 14px rgba(47, 129, 247, 0); }
+}
+
+section.updated { animation: refreshed 1.1s ease-out 1; border-radius: 10px; }
+
+.run-card.live { border-left-color: var(--warn); }
+
+.run-live {
+  font-family: var(--mono);
+  font-size: .64rem;
+  letter-spacing: .05em;
+  color: var(--warn);
+}
+
+.run-log .log-path {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.run-log .log-path:hover { color: var(--ink); background: rgba(47, 129, 247, .12); }
+
+/* -- the voice call ---------------------------------------------------- */
+
+.voice-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.voice-panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 1rem 1.15rem;
+}
+
+.voice-panel h3 { margin-top: 0; }
+
+#voice-audio { width: 100%; margin-bottom: .9rem; }
+
+.voice-turns { display: flex; flex-direction: column; gap: .45rem; }
+
+.turn {
+  display: grid;
+  grid-template-columns: 4.5rem 1fr auto;
+  gap: .6rem;
+  align-items: baseline;
+  padding: .35rem .5rem;
+  border-radius: 5px;
+  background: var(--panel-2);
+  font-size: .8rem;
+}
+
+/* The agent and the customer are visually distinct because the disclosure rule
+ * is about who is speaking: R10 governs the agent's first utterance only. */
+.turn.agent    { border-left: 2px solid var(--accent); }
+.turn.customer { border-left: 2px solid var(--good); }
+
+.turn-who {
+  font-family: var(--mono);
+  font-size: .66rem;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  color: var(--dim);
+}
+
+.turn-text { color: var(--ink); }
+
+.turn-flag {
+  font-family: var(--mono);
+  font-size: .62rem;
+  padding: .08rem .4rem;
+  border-radius: 3px;
+  background: rgba(47, 129, 247, .16);
+  color: var(--accent);
+  white-space: nowrap;
+}
+
+.voice-promise {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--good);
+  border-radius: 8px;
+  padding: 1rem 1.15rem;
+}
+
+.promise-label {
+  font-size: .7rem;
+  text-transform: uppercase;
+  letter-spacing: .07em;
+  color: var(--dim);
+  margin-bottom: .4rem;
+}
+
+.promise-quote {
+  font-size: 1.05rem;
+  font-style: italic;
+  color: var(--good);
+  margin-bottom: .8rem;
+}
+
+/* -- the live call ----------------------------------------------------- */
+
+.call-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: .8rem;
+  margin-bottom: 1rem;
+}
+
+.btn.talk {
+  padding: .7rem 1.6rem;
+  font-size: .95rem;
+  user-select: none;
+}
+
+/* Held, not toggled -- so the state has to be unmistakable at a glance while
+ * someone is talking and not looking at the button. */
+.btn.talk.recording {
+  background: rgba(248, 81, 73, .2);
+  border-color: var(--bad);
+  color: var(--bad);
+  animation: pulse 1s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(248, 81, 73, .5); }
+  50%      { box-shadow: 0 0 0 9px rgba(248, 81, 73, 0); }
+}
+
+.call-ruling {
+  font-family: var(--mono);
+  font-size: .74rem;
+  color: var(--muted);
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--good);
+  border-radius: 6px;
+  padding: .6rem .8rem;
+  margin-bottom: .8rem;
+}
+
+#call-turns { margin-bottom: 1rem; }
+#call-audio { width: 100%; margin-bottom: 1rem; }
+
+/* -- replay ------------------------------------------------------------ */
+
+.replay-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: .75rem;
+  margin-bottom: 1rem;
+}
+
+.replay-controls label {
+  display: inline-flex;
+  align-items: center;
+  gap: .4rem;
+  font-size: .76rem;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  color: var(--dim);
+}
+
+.replay-controls select {
+  font: inherit;
+  font-family: var(--mono);
+  font-size: .78rem;
+  text-transform: none;
+  letter-spacing: 0;
+  padding: .3rem .45rem;
+  background: var(--bg);
+  color: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+}
+
+.replay-counters {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(118px, 1fr));
+  gap: .6rem;
+  margin-bottom: 1rem;
+}
+
+.counter {
+  display: flex;
+  flex-direction: column;
+  gap: .15rem;
+  padding: .55rem .7rem;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.counter-label {
+  font-size: .64rem;
+  text-transform: uppercase;
+  letter-spacing: .07em;
+  color: var(--dim);
+}
+
+.counter-value {
+  font-family: var(--mono);
+  font-size: 1rem;
+  color: var(--ink);
+}
+
+.replay-feed {
+  display: flex;
+  flex-direction: column;
+  gap: .3rem;
+  min-height: 4rem;
+}
+
+/* Newest event on top, sliding in. The animation is the whole point of the
+ * section: a table of the same rows already exists above, and what it cannot
+ * show is the loop happening. */
+@keyframes slide-in {
+  from { opacity: 0; transform: translateY(-6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.feed-row {
+  display: grid;
+  grid-template-columns: 4.5rem 1.6rem 6.5rem 9rem 7.5rem 8.5rem 9.5rem 1fr;
+  gap: .6rem;
+  align-items: center;
+  padding: .4rem .7rem;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--line);
+  border-radius: 5px;
+  font-family: var(--mono);
+  font-size: .72rem;
+  animation: slide-in .18s ease-out 1;
+  overflow: hidden;
+}
+
+.feed-row.allow  { border-left-color: var(--good); }
+.feed-row.amend  { border-left-color: var(--warn); }
+.feed-row.reject { border-left-color: var(--bad); }
+
+.feed-seq    { color: var(--dim); }
+.feed-arm    { color: var(--accent); font-weight: 600; }
+.feed-type   { color: var(--muted); }
+.feed-reason { color: var(--muted); }
+.feed-amount { color: var(--ink); text-align: right; }
+.feed-action { color: var(--muted); }
+
+.feed-verdict {
+  font-weight: 600;
+  letter-spacing: .03em;
+}
+
+.feed-verdict.allow  { color: var(--good); }
+.feed-verdict.amend  { color: var(--warn); }
+.feed-verdict.reject { color: var(--bad); }
+
+.feed-recovered { color: var(--good); }
+
+.feed-why {
+  color: var(--dim);
+  font-size: .68rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+@media (max-width: 900px) {
+  .feed-row {
+    grid-template-columns: 1fr 1fr;
+    row-gap: .2rem;
+  }
+  .feed-amount { text-align: left; }
+}
+
+/* -- row browser ------------------------------------------------------- */
+
+.btn {
+  font: inherit;
+  font-size: .82rem;
+  padding: .4rem .85rem;
+  border-radius: 5px;
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.btn:hover { border-color: var(--accent); }
+.btn:disabled { opacity: .5; cursor: default; border-color: var(--line); }
+.btn.primary { background: rgba(47, 129, 247, .16); border-color: rgba(47, 129, 247, .5); }
+
+.rows-toolbar, .rows-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: .75rem;
+  margin-bottom: 1rem;
+}
+
+.rows-status, .hint {
+  font-family: var(--mono);
+  font-size: .74rem;
+  color: var(--dim);
+}
+
+.hint { font-family: inherit; font-size: .78rem; max-width: 52ch; }
+
+.filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .6rem 1rem;
+  align-items: center;
+  padding: .9rem 1rem;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  margin-bottom: 1rem;
+}
+
+.filters label {
+  display: inline-flex;
+  align-items: center;
+  gap: .4rem;
+  font-size: .76rem;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  color: var(--dim);
+}
+
+.filters label.grow { flex: 1 1 14rem; }
+
+.filters select, .filters input[type="search"] {
+  font: inherit;
+  font-family: var(--mono);
+  font-size: .78rem;
+  text-transform: none;
+  letter-spacing: 0;
+  padding: .3rem .45rem;
+  background: var(--bg);
+  color: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+}
+
+.filters input[type="search"] { flex: 1 1 auto; min-width: 8rem; }
+
+.rows-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .5rem 1.8rem;
+  margin: 0 0 1rem;
+  padding: .8rem 1rem;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-family: var(--mono);
+  font-size: .8rem;
+}
+
+/* Each label+value is one flex item, so a wrap can never leave a number
+ * stranded on the line below its own label -- which it did at first, putting
+ * "760" under "envelope refused" as if it were a separate statistic. */
+.rows-summary .pair { display: flex; align-items: baseline; gap: .4rem; }
+
+.rows-summary dt {
+  color: var(--dim);
+  font-size: .7rem;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  white-space: nowrap;
+}
+
+.rows-summary dd { margin: 0; color: var(--ink); white-space: nowrap; }
+
+table.rows {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--mono);
+  font-size: .72rem;
+}
+
+table.rows th, table.rows td {
+  padding: .3rem .5rem;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  white-space: nowrap;
+}
+
+table.rows th {
+  position: sticky;
+  top: 0;
+  background: var(--panel-2);
+  color: var(--dim);
+  font-size: .66rem;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  z-index: 1;
+}
+
+table.rows th.sortable { cursor: pointer; user-select: none; }
+table.rows th.sortable:hover { color: var(--accent); }
+table.rows td.num { text-align: right; }
+table.rows tr:hover td { background: var(--panel); }
+
+/* The refusal prose. One line, ellipsised.
+ *
+ * It wrapped freely at first, and that was visibly wrong: a full RBI R1
+ * citation is ~300 characters, so those rows grew to six or seven lines each
+ * while the column itself sat off the right edge of the horizontal scroll --
+ * the table looked randomly gap-toothed for a reason the viewer could not see.
+ * One line keeps every row the same height; the full text is on the title
+ * attribute (hover) and complete in the CSV. */
+table.rows td.prose {
+  max-width: 22rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--muted);
+}
+
+table.rows td .true { color: var(--good); }
+table.rows td .false { color: var(--dim); }
+
+/* -- print / PDF ------------------------------------------------------- */
+/*
+ * "Save as PDF" is the browser's own print-to-PDF, driven by `window.print()`.
+ * No PDF library: every candidate would mean a CDN script or a build step, and
+ * this page's whole premise is that it has neither. The cost is that the viewer
+ * picks the destination in the print dialog; the benefit is that it works
+ * offline, in every browser, with nothing to keep up to date.
+ *
+ * The screen theme is dark, which prints as a solid black page. So print gets
+ * its own palette rather than the screen's.
+ */
+@media print {
+  /* Landscape, because the export is 17 columns wide. In portrait the last
+   * column -- `exception_reason`, the envelope's own reason for refusing, and
+   * the most useful cell in the row -- ran off the right edge and was silently
+   * clipped from the PDF. A wider page is the fix; dropping the column to fit
+   * would have printed a table that omits the answer. */
+  @page { size: landscape; margin: 10mm; }
+
+  :root {
+    --bg: #fff; --panel: #fff; --panel-2: #f4f4f5; --line: #c9ced6;
+    --ink: #111; --muted: #333; --dim: #555;
+    --accent: #14509c; --good: #1c6b2e; --warn: #8a5b00; --bad: #a01710;
+  }
+
+  body { background: #fff; color: #111; font-size: 10pt; }
+  main { max-width: none; padding: 0; }
+
+  /* Controls are not part of a document. */
+  .no-print, .provenance dt.no-print { display: none !important; }
+
+  /* Print the data, not the marketing: the tiles and charts are on screen for
+   * exploring, and a filtered row export is what someone actually files. */
+  #headline-section, #ledger-section, #category-section, #why-section,
+  .masthead .tagline, footer { display: none !important; }
+
+  .masthead { border-bottom: 1px solid #c9ced6; padding: 0 0 .5rem; }
+
+  section { margin: 0 0 1rem; }
+  h2 { color: #111; font-size: 11pt; }
+  .section-note { color: #333; font-size: 8.5pt; max-width: none; }
+
+  .table-scroll { overflow: visible; }
+
+  table.rows { font-size: 6.5pt; width: 100%; }
+  table.rows th {
+    position: static;
+    background: #f4f4f5;
+    color: #111;
+    border-bottom: 1px solid #999;
+  }
+  table.rows td, table.rows th { padding: .1rem .2rem; }
+  /* On screen every cell is nowrap so rows stay uniform under a horizontal
+   * scrollbar. Paper has no horizontal scroll, so cells wrap instead and the
+   * table fits the page width. */
+  table.rows td, table.rows th { white-space: normal; }
+  /* Three lines, not the whole citation.
+   *
+   * Unclamped, a full R1 reason wraps to six lines and every refused row became
+   * six rows tall -- 473 filtered rows printed as 53 pages, gap-toothed and
+   * unreadable. Three lines carry the rule and its first clause, which is the
+   * substance; `gate_rule` already names the rule in its own column, and the
+   * complete text is in build/actions.csv, which the note below says. */
+  table.rows td.prose {
+    max-width: none;
+    width: 22%;
+    font-size: 6pt;
+    overflow: visible;
+    text-overflow: clip;
+  }
+
+  /* The clamp lives on the inner span, so the cell stays a table-cell and the
+   * 22% column width is still honoured. */
+  table.rows td.prose .clamp {
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    max-height: 4.3em;   /* where line-clamp is unsupported */
+  }
+
+  /* Print-only footnote, so a printed page is self-explanatory when it is read
+   * away from the dashboard that produced it. */
+  #rows-section::after {
+    content: "Refusal reasons are clamped to three lines here; the complete text, and every column, is in build/actions.csv. Latent (counterfactual) fields are excluded by design.";
+    display: block;
+    margin-top: .6rem;
+    font-size: 7pt;
+    color: #555;
+  }
+  /* Never split a row across a page break. */
+  table.rows tr { page-break-inside: avoid; break-inside: avoid; }
+  table.rows thead { display: table-header-group; }
+
+  .rows-summary {
+    background: #f4f4f5;
+    border: 1px solid #c9ced6;
+    page-break-inside: avoid;
+  }
+
+  a[href]::after { content: ""; }
+}
+
+/* -- narrow screens ---------------------------------------------------- */
+/*
+ * Not a phone-first design -- this is a laptop demo artifact. But it is also
+ * the thing someone opens on a phone after seeing the video, and a page whose
+ * paragraphs are clipped off the right edge reads as broken rather than as
+ * desktop-only. These three rules are what stop that.
+ */
+@media (max-width: 640px) {
+  main { padding: 0 1rem; }
+
+  /* 12rem of label column leaves nothing for the value on a 390px screen. */
+  .fields { grid-template-columns: 1fr; gap: .1rem; }
+  .fields dt { margin-top: .5rem; }
+
+  /* Same problem: 16rem of fixed columns crowds the bar off the row. */
+  .bar-row { grid-template-columns: 7.5rem 1fr 3.5rem; font-size: .72rem; }
+  .bars.compact .bar-row { grid-template-columns: 4rem 1fr 3rem; }
+
+  /* The masthead's provenance block sits under the title rather than beside. */
+  .masthead { gap: 1.25rem; }
+
+  .tile .label { min-height: 0; }
+}

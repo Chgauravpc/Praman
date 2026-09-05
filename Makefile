@@ -1,4 +1,4 @@
-.PHONY: help demo demo-full demo-live investigate investigate-live models test verify golden clean install execute execute-full execute-live voice voice-live
+.PHONY: help demo demo-full demo-live investigate investigate-live models test verify golden clean install execute execute-full execute-live voice voice-live dashboard
 
 PYTHON ?= python
 
@@ -27,6 +27,7 @@ help:
 	@echo "  make execute-live     also creates one real order + payment link in Razorpay TEST mode"
 	@echo "  make voice            Day 7: the Hinglish recovery call -> transcript + ledger, keyless"
 	@echo "  make voice-live       the same on the live stack; writes assets/voice-demo.mp3 (Sarvam key)"
+	@echo "  make dashboard   aggregate the committed ledger into build/dashboard.json"
 	@echo "  make test        the full test suite, including invariants I1/I2/I7"
 	@echo "  make verify      test + demo determinism check (I8)"
 	@echo "  make golden      regenerate the golden ledger. Read the diff."
@@ -111,6 +112,18 @@ golden:
 # system does not write.
 golden-kinds:
 	@PRAMAAN_LLM_OFFLINE=1 $(PYTHON) -c "from tests.test_ledger_kind_coverage import build_all_kinds_ledger, GOLDEN; build_all_kinds_ledger().export_jsonl(GOLDEN); print('wrote', GOLDEN)"
+
+# The dashboard snapshot (DASHBOARD-PLAN.md). Read-only: it opens the committed
+# ledger through a `mode=ro` URI, aggregates, and writes one JSON file. It
+# re-runs no pipeline, makes no LLM call, and needs no key -- so it cannot move
+# a number that `make demo-full` and `make execute-full` already fixed.
+#
+# Needs `make demo-full` first (for the ledger) and `make execute-full` for the
+# contrast tiles. Without the latter the page renders the observed per-arm
+# figures and says plainly that the headline is missing, rather than filling it
+# in from a different population.
+dashboard:
+	@PRAMAAN_LLM_OFFLINE=1 $(PYTHON) -m pramaan.report.snapshot
 
 clean:
 	@rm -rf build

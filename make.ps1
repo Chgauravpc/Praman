@@ -12,7 +12,7 @@
 param(
     [Parameter(Position = 0)]
     [ValidateSet('help', 'demo', 'demo-full', 'demo-live', 'test', 'verify', 'golden', 'clean', 'install',
-                 'execute', 'execute-full', 'execute-live')]
+                 'execute', 'execute-full', 'execute-live', 'dashboard')]
     [string]$Target = 'help'
 )
 
@@ -39,6 +39,7 @@ switch ($Target) {
         Write-Output '  .\make.ps1 execute        Day 5: plan -> envelope -> resolve, arm C wired, shadow mode'
         Write-Output '  .\make.ps1 execute-full   the same, on the 6,000-event batch'
         Write-Output '  .\make.ps1 execute-live   also creates one real order + payment link in Razorpay TEST mode'
+        Write-Output '  .\make.ps1 dashboard      aggregate the committed ledger into build/dashboard.json'
     }
 
     'install' { & python -m pip install -r requirements.txt }
@@ -95,6 +96,15 @@ switch ($Target) {
         $env:PRAMAAN_LLM_OFFLINE = '1'
         & python -m pramaan.cli execute --dev --live-razorpay
         if ($LASTEXITCODE -ne 0) { throw "execute --live-razorpay failed with exit code $LASTEXITCODE" }
+    }
+
+    'dashboard' {
+        # Read-only aggregation over the committed ledger. Re-runs no pipeline,
+        # makes no LLM call, needs no key -- so it cannot move a number that
+        # demo-full and execute-full already fixed.
+        $env:PRAMAAN_LLM_OFFLINE = '1'
+        & python -m pramaan.report.snapshot
+        if ($LASTEXITCODE -ne 0) { throw "dashboard failed with exit code $LASTEXITCODE" }
     }
 
     'clean' {
