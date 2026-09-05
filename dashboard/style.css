@@ -1097,3 +1097,41 @@ table.rows td .false { color: var(--dim); }
   color: var(--accent);
   margin: .9rem 0 .45rem;
 }
+
+/* -- the canary -------------------------------------------------------- */
+
+.canary {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--good);
+  border-radius: 8px;
+  padding: 1rem 1.2rem;
+}
+
+.canary-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: .7rem;
+  margin-bottom: .8rem;
+}
+
+.canary-verdict {
+  font-family: var(--mono);
+  font-size: .82rem;
+  font-weight: 600;
+  letter-spacing: .06em;
+  padding: .18rem .6rem;
+  border-radius: 4px;
+}
+
+.canary-verdict.confirmed { background: rgba(63, 185, 80, .16); color: var(--good); }
+.canary-verdict.refuted   { background: rgba(248, 81, 73, .16); color: var(--bad); }
+.canary-verdict.inconclusive { background: rgba(210, 153, 34, .16); color: var(--warn); }
+
+.canary-note {
+  margin: .8rem 0 0;
+  font-size: .84rem;
+  color: var(--muted);
+  max-width: 78ch;
+}

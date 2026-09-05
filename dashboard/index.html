@@ -282,6 +282,35 @@
     <div class="voice-promise" id="call-promise" hidden></div>
   </section>
 
+  <section id="counterfactual-section" hidden>
+    <h2>What would have happened anyway</h2>
+    <p class="section-note">The simulator knows both outcomes for every event:
+      what happened, and what <em>would</em> have happened with no action at all.
+      That second one is the answer key, and it is the only reason a holdout arm
+      means anything. <strong>Per-event truth appears nowhere</strong> &mdash; not
+      on this page, not in either CSV, asserted by test &mdash; because an export
+      carrying it would let anyone compute the true effect per event and turn an
+      audit trail into a cheat sheet. These are aggregates, one per arm, the same
+      figures <code>EVALUATION.md</code> publishes.</p>
+
+    <div class="tiles" id="counterfactual-tiles"></div>
+    <p class="section-note" id="counterfactual-foot"></p>
+  </section>
+
+  <section id="canary-section" hidden>
+    <h2>Does the conclusion survive the arithmetic?</h2>
+    <p class="section-note">A third assertion, deliberately separate from the two
+      below it. <code>DIAGNOSIS</code> is what the model said.
+      <code>RECEIPT_AUDIT</code> is what survived a check of its citations.
+      <strong>The canary is whether the conclusion survives the numbers</strong>
+      &mdash; it re-derives which segment moved on rate and which on mix from the
+      decomposition tool's own arithmetic, and compares that against the
+      session's claim. A refuted verdict writes a <code>RETRACTION</code>: the
+      system withdrawing something it had already said.</p>
+
+    <div class="canary" id="canary-card"></div>
+  </section>
+
   <section id="why-section" hidden>
     <h2>Why did the agent do this?</h2>
     <p class="section-note">Real rows from <code>tests/golden/all_kinds.jsonl</code>,

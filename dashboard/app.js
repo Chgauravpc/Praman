@@ -1196,6 +1196,93 @@ function renderPlans(plans) {
   return true;
 }
 
+/* -- the counterfactual ------------------------------------------------ */
+
+function renderCounterfactual(headline) {
+  if (!headline || !headline.summaries) return false;
+  var arms = headline.summaries;
+  /* Written by an older execute run, before the field existed. Absent is
+   * reported by omitting the section rather than by drawing zeroes. */
+  if (arms.A && arms.A.would_recover_unaided === undefined) return false;
+
+  var host = document.getElementById('counterfactual-tiles');
+  host.textContent = '';
+  Object.keys(arms).sort().forEach(function (name) {
+    var arm = arms[name];
+    var unaided = arm.would_recover_unaided;
+    var net = arm.recovered - unaided;
+    host.appendChild(tile(
+      'Arm ' + name + ' — what the action added',
+      (net > 0 ? '+' : '') + count(net),
+      count(arm.recovered) + ' recovered\n' +
+      count(unaided) + ' would have recovered unaided\n' +
+      (arm.recovered ? percent(unaided / arm.recovered) + ' of them' : '—') +
+      ' needed nothing',
+      net > 0 ? 'pos' : null,
+      { tag: name === 'A' ? 'holdout' : 'observed', full: name !== 'A',
+        text: name === 'A'
+          ? 'takes no action, so recovered and unaided are the same number by ' +
+            'construction — the estimator returning +0 here is the sanity check'
+          : 'recoveries minus the ones the latent world says needed no help' }
+    ));
+  });
+
+  var c = arms.C;
+  document.getElementById('counterfactual-foot').textContent = c
+    ? 'Arm C recovered ' + count(c.recovered) + ' events and ' +
+      count(c.would_recover_unaided) + ' of those would have recovered on their ' +
+      'own — so the real contribution is ' +
+      count(c.recovered - c.would_recover_unaided) + ' events, not ' +
+      count(c.recovered) + '. Arm A shows +0 by construction, which is how you ' +
+      'know the estimator is not inventing effects.'
+    : '';
+  return true;
+}
+
+/* -- the canary -------------------------------------------------------- */
+
+function renderCanary(canary) {
+  if (!canary) return false;
+  var host = document.getElementById('canary-card');
+  host.textContent = '';
+
+  var verdict = (canary.verdict || '').toLowerCase();
+  var head = el('div', 'canary-head');
+  head.appendChild(el('span', 'canary-verdict ' + verdict, canary.verdict || '—'));
+  head.appendChild(el('span', 'why-ref',
+    'seq ' + canary.seq + ' · ' + canary.source));
+  host.appendChild(head);
+
+  var table = el('dl', 'fields');
+  [
+    ['rate shift segment', canary.observed_rate_segment, canary.truth_rate_segment,
+     canary.rate_matches],
+    ['mix shift segment', canary.observed_mix_segment, canary.truth_mix_segment,
+     canary.mix_matches],
+  ].forEach(function (row) {
+    table.appendChild(el('dt', null, row[0]));
+    var dd = el('dd', null);
+    dd.appendChild(el('span', null, 'observed ' + row[1] + ' · truth ' + row[2] + '  '));
+    dd.appendChild(el('span', row[3] ? 'true' : 'false', row[3] ? 'match' : 'MISMATCH'));
+    table.appendChild(dd);
+  });
+  host.appendChild(table);
+
+  /* Absence of a retraction is a result, not a blank. Most canary checks
+   * confirm; saying so is what makes the refutation path meaningful when it
+   * does fire. */
+  var note = el('p', 'canary-note');
+  note.textContent = canary.retraction
+    ? 'A RETRACTION was written at seq ' + canary.retraction.seq +
+      ' — the system withdrew its own verdict (' +
+      canary.retraction.retracted_verdict + ') against contradicting evidence.'
+    : 'No RETRACTION row: this verdict was confirmed, not refuted. The ' +
+      'refutation path is exercised separately in tests/test_canary.py — ' +
+      'confirmation is the common case and is recorded just as deliberately.';
+  host.appendChild(note);
+  return true;
+}
+
 /* -- the voice call ---------------------------------------------------- */
 
 function renderVoice(voice) {
@@ -1520,6 +1607,10 @@ function render(data) {
     initRows(data.provenance);
 
     if (renderPlans(data.plans)) show('plans-section');
+
+    if (renderCounterfactual(data.headline)) show('counterfactual-section');
+
+    if (renderCanary(data.canary)) show('canary-section');
 
     if (renderVoice(data.voice)) show('voice-section');
 

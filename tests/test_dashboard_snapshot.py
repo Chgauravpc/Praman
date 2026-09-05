@@ -370,13 +370,30 @@ def test_serialised_intervals_keep_the_method_and_any_fallback_reason(metrics):
             assert "fallback_reason" in interval
 
 
-def test_latent_truth_is_not_serialised(metrics):
-    """``would_recover_unaided`` is the answer key. ADR-010 keeps it out of the
-    ledger because the ledger is audited; it stays out of the dashboard because
-    the dashboard is watched."""
+def test_only_the_aggregate_counterfactual_is_serialised(metrics):
+    """Superseded a blanket ban, and the reason is worth keeping.
+
+    This test used to assert ``would_recover_unaided`` appeared nowhere in the
+    serialised metrics, on the reasoning that ADR-010 keeps latent truth out of
+    the ledger so the dashboard should match. That conflated two protections
+    with one rule. ADR-010 stops an *agent* reading the answer key, and stops
+    per-event truth reaching an artifact a reviewer can download -- both still
+    hold, and ``test_per_event_latent_truth_reaches_neither_export`` is the one
+    that enforces the second.
+
+    A per-arm total is neither of those things: it is the figure EVALUATION.md
+    already publishes, and withholding it would overstate the result by exactly
+    the amount the holdout exists to measure. So the aggregate is required to be
+    present, and the shape is pinned to a scalar so a future edit cannot smuggle
+    a per-event list through under the same name.
+    """
     payload = S.metrics_to_dict(metrics)
-    for summary in payload["summaries"].values():
-        assert "would_recover_unaided" not in summary
+    for arm, summary in payload["summaries"].items():
+        assert "would_recover_unaided" in summary, arm
+        assert isinstance(summary["would_recover_unaided"], int), (
+            "%s: the counterfactual must stay one number per arm, never a "
+            "per-event collection" % arm
+        )
 
 
 def test_metrics_written_to_disk_round_trip_unchanged(metrics, tmp_path: Path):
@@ -729,6 +746,112 @@ def test_the_authored_sample_is_capped(tmp_path: Path):
     assert len(plans["authored"]) == S.PLAN_SAMPLE_CAP, (
         "the count reports every plan; only the carried sample is capped"
     )
+
+
+# --------------------------------------------------------------------------
+# The canary view, and the line between aggregate and per-event truth
+# --------------------------------------------------------------------------
+
+
+def _canary_db(tmp_path: Path, *, verdict: str, refuted: bool) -> Path:
+    path = tmp_path / ("canary-%s.db" % verdict.lower())
+    conn = connect(path)
+    ledger = Ledger(conn)
+    ts = "2026-08-03T10:00:00+05:30"
+    ledger.append("CANARY", ts=ts, payload={
+        "verdict": verdict,
+        "observed_rate_segment": "tier2",
+        "truth_rate_segment": "tier2",
+        "observed_mix_segment": "tier3" if not refuted else "metro",
+        "truth_mix_segment": "tier3",
+        "evidence": {"decompose_call_id": "tc_01"},
+    })
+    if refuted:
+        ledger.append("RETRACTION", ts=ts, payload={
+            "retracted_verdict": verdict, "contradicting_evidence": {},
+        })
+    conn.commit()
+    conn.close()
+    return path
+
+
+def test_a_confirmed_canary_reports_both_dimensions_matching(tmp_path: Path):
+    canary = S.read_canary(_canary_db(tmp_path, verdict="CONFIRMED", refuted=False))
+    assert canary["verdict"] == "CONFIRMED"
+    assert canary["rate_matches"] is True
+    assert canary["mix_matches"] is True
+    assert canary["retraction"] is None
+
+
+def test_a_refuted_canary_surfaces_its_retraction(tmp_path: Path):
+    """The refutation path -- the system withdrawing a claim it had made.
+
+    Built here rather than waited for: the committed investigation confirms, so
+    without a constructed refutation this branch would never run and the
+    RETRACTION rendering would be untested code behind a claim the README makes.
+    """
+    canary = S.read_canary(_canary_db(tmp_path, verdict="REFUTED", refuted=True))
+    assert canary["verdict"] == "REFUTED"
+    assert canary["mix_matches"] is False, "observed tier differs from truth"
+    assert canary["retraction"] is not None
+    assert canary["retraction"]["retracted_verdict"] == "REFUTED"
+
+
+def test_a_ledger_with_no_canary_row_is_absent_not_an_error(tmp_path: Path):
+    path = tmp_path / "plain.db"
+    conn = connect(path)
+    Ledger(conn).append("DIAGNOSIS", ts="2026-08-03T10:00:00+05:30", payload={"claims": 0})
+    conn.commit()
+    conn.close()
+    assert S.read_canary(path) is None
+    assert S.read_canary(tmp_path / "absent.db") is None
+
+
+def test_the_aggregate_counterfactual_is_published(metrics):
+    """One number per arm, the same figure EVALUATION.md prints.
+
+    Deliberately reversed from an earlier decision to withhold it. ADR-010
+    protects against an *agent* reading the answer key and against per-event
+    truth reaching a downloadable artifact; a per-arm total is neither, and
+    hiding it would flatter the result by exactly the amount the holdout exists
+    to measure.
+    """
+    payload = S.metrics_to_dict(metrics)
+    for arm, summary in payload["summaries"].items():
+        assert "would_recover_unaided" in summary, arm
+        assert isinstance(summary["would_recover_unaided"], int)
+
+
+def test_the_holdout_arm_has_no_incremental_recoveries(metrics):
+    """Arm A takes no action, so recovered and unaided must be identical.
+
+    The estimator's own sanity check: a non-zero here would mean the
+    counterfactual is inventing an effect for an arm that did nothing.
+    """
+    payload = S.metrics_to_dict(metrics)
+    arm_a = payload["summaries"]["A"]
+    assert arm_a["recovered"] == arm_a["would_recover_unaided"]
+
+
+def test_per_event_latent_truth_reaches_neither_export(csv_path: Path, ledger_db: Path,
+                                                       tmp_path: Path):
+    """The aggregate is published; the per-event answer key is not.
+
+    That is the whole distinction. A CSV carrying ``would_recover_unaided`` per
+    row lets anyone compute the true effect for every event, which turns an
+    audit artifact into an answer sheet.
+    """
+    detected = tmp_path / "detected.csv"
+    ro = S.connect_readonly(ledger_db)
+    try:
+        S.write_detected_csv(S.read_detected(ro)["rows"], detected)
+    finally:
+        ro.close()
+    for path in (csv_path, detected):
+        with open(path, newline="", encoding="utf-8") as handle:
+            header = next(csv.reader(handle))
+        for banned in ("would_recover", "self_recovers", "has_intent", "latent"):
+            assert not any(banned in column for column in header), (path.name, banned)
 
 
 def test_non_finite_values_become_null_rather_than_crashing():

@@ -346,7 +346,7 @@ make voice       # the Hinglish recovery call -> transcript + ledger, keyless
 make voice-live  # the same, synthesised to assets/voice-demo.mp3 (needs SARVAM_API_KEY)
 make models      # print the configured model IDs and check they still resolve
 make dashboard   # aggregate the committed ledger into build/dashboard.json
-make test        # 684 tests, including the invariants below
+make test        # 690 tests, including the invariants below
 make verify      # tests, plus a byte-identical-output check across two runs
 ```
 

@@ -143,10 +143,20 @@ def _arm_summary_to_dict(summary: ArmSummary) -> Dict[str, Any]:
         "cost_by_action": dict(summary.cost_by_action),
         "rate": _finite(summary.rate),
         "value_share": _finite(summary.value_share),
-        # `would_recover_unaided` is latent truth -- the answer key, available
-        # only in simulation. ADR-010 quarantines it out of the ledger because
-        # the ledger is what a reviewer audits; the dashboard is what a reviewer
-        # watches, so it is kept out of here for the same reason.
+        # The aggregate counterfactual: how many of this arm's recoveries the
+        # latent world says would have happened with no action at all.
+        #
+        # An earlier version of this function withheld it, reasoning that
+        # ADR-010 keeps latent truth out of the ledger so the dashboard should
+        # match. That conflated two different things. What ADR-010 protects
+        # against is an *agent* reading the answer key, and per-event truth
+        # leaking into an artifact a reviewer can download -- which is why
+        # neither CSV carries it and a test asserts so. One aggregate per arm is
+        # neither: it is the same figure EVALUATION.md publishes, and it is the
+        # most honest number this project has. Arm C recovered 710 and 515 of
+        # those would have recovered anyway; hiding that would flatter the
+        # result by exactly the amount the holdout exists to measure.
+        "would_recover_unaided": int(summary.would_recover_unaided),
     }
 
 
@@ -935,6 +945,54 @@ def read_plans(jsonl_path: Path) -> Optional[Dict[str, Any]]:
     }
 
 
+def read_canary(db_path: Path) -> Optional[Dict[str, Any]]:
+    """The canary's verdict on the investigator, from the investigate run's chain.
+
+    A third assertion, separate from the two beside it on purpose: ``DIAGNOSIS``
+    is what the model said, ``RECEIPT_AUDIT`` is what survived a check of its
+    citations, and ``CANARY`` is whether the conclusion survives the arithmetic.
+    A ``RETRACTION`` appears only when a verdict is refuted -- the system
+    withdrawing a claim it had already made -- so its absence is a result too,
+    and is reported rather than left as a blank.
+
+    Returns ``None`` when no investigate run has happened, which is not an
+    error: the section is simply omitted.
+    """
+    if not db_path.exists():
+        return None
+    conn = connect_readonly(db_path)
+    try:
+        canary = retraction = None
+        for row in conn.execute("SELECT * FROM ledger ORDER BY seq"):
+            if row["kind"] == "CANARY":
+                canary = (int(row["seq"]), _payload(row))
+            elif row["kind"] == "RETRACTION":
+                retraction = (int(row["seq"]), _payload(row))
+    finally:
+        conn.close()
+
+    if canary is None:
+        return None
+    seq, payload = canary
+    return {
+        "seq": seq,
+        "verdict": payload.get("verdict"),
+        "observed_rate_segment": payload.get("observed_rate_segment"),
+        "truth_rate_segment": payload.get("truth_rate_segment"),
+        "observed_mix_segment": payload.get("observed_mix_segment"),
+        "truth_mix_segment": payload.get("truth_mix_segment"),
+        # Computed here rather than in the browser so the page keeps formatting
+        # and never deciding whether a claim held.
+        "rate_matches": payload.get("observed_rate_segment") == payload.get("truth_rate_segment"),
+        "mix_matches": payload.get("observed_mix_segment") == payload.get("truth_mix_segment"),
+        "retraction": None if retraction is None else {
+            "seq": retraction[0],
+            "retracted_verdict": retraction[1].get("retracted_verdict"),
+        },
+        "source": db_path.name,
+    }
+
+
 def _panel(row: Dict[str, Any], caption: str, fields: Dict[str, Any]) -> Dict[str, Any]:
     """One why-panel: the row's identity, a caption, and named fields.
 
@@ -1054,6 +1112,9 @@ def build_snapshot(
         # The planner's own output. Optional: present once an execute run has
         # exported its chain.
         "plans": read_plans(BUILD_DIR / "execute-full.jsonl"),
+        # The canary's verdict on the investigator. Optional: present once
+        # `make investigate` has run.
+        "canary": read_canary(BUILD_DIR / "investigate-42.db"),
         # Optional: present only once `make voice` has run.
         "voice": read_voice(
             BUILD_DIR / "voice.db",
