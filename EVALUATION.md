@@ -20,9 +20,9 @@ run, twice):
 
 | Contrast | Estimate (95% BCa CI) | Reading |
 |---|---|---|
-| **C − A** — does the LLM-planned loop recover money? | **+17.49pp [+14.64, +20.45]** | excludes zero; **₹7,44,967 incremental**, 96 contacted, ₹0.0003/incremental ₹ |
-| **C − B** — did the LLM earn its place over the lookup table? | **+16.91pp [+13.96, +19.81]** | excludes zero |
-| True C − B (potential outcomes, exact) | **+14.07pp** | confirms the estimate is real, not sampling noise |
+| **C − A** — does the LLM-planned loop recover money? | **+10.43pp [+7.63, +13.33]** | excludes zero; **₹88,747 incremental**, 191 contacted, ₹0.0017/incremental ₹ |
+| **C − B** — did the LLM earn its place over the lookup table? | **+9.12pp [+6.32, +12.07]** | excludes zero on rate; **value-weighted it is −6.33pp** — arm C wins more events and fewer rupees |
+| True C − B (potential outcomes, exact) | **+7.88pp** | confirms the estimate is real, not sampling noise |
 
 **What the LLM decided, inspected directly:** for `TECH_TRANSIENT` and
 `AUTH_DROPOFF` (the two highest-volume classes) the planner proposes an
@@ -30,9 +30,11 @@ run, twice):
 `ACT_WAIT`. Both are legal under the taxonomy; where the block has cleared by
 detection time, the server-side attempt recovers the payment at **zero
 customer-contact cost**, which is exactly the mechanism the true-effect number
-measures. On the full batch, **36 of 273 planner signatures** resolve to a real
+measures. On the full batch, **33 of 303 planner signatures** resolve to a real
 LLM reply; the rest fall back to the deterministic default (labelled), and the
-organic planner violation rate is **0.0%**.
+organic planner violation rate is **19.0%** event-weighted (**7.7%** per distinct
+signature) — almost all of it mandate debits caught by R1, which the payment-only
+batch never contained.
 
 **A discipline worth recording** (`STATE.md`, the headline section): the *first*
 full-batch run — before any API key existed — printed C−B as +3.83pp [+0.93,+6.64],
@@ -40,7 +42,50 @@ an interval **excluding zero on a provably-zero effect** (with no key, every arm
 plan was byte-identical to arm B's). That was not a bug — it is what "95%
 confidence" means on one random split — but quoting it alone would have been a real
 false discovery. So the shadow report **always** prints the exact true effect next
-to the estimated interval. That is why the +14.07pp above is trustworthy.
+to the estimated interval. That is why the +7.88pp above is trustworthy.
+
+---
+
+## Does it replicate? Five seeds
+
+One batch is one draw of the world. The interval above says how precisely *this*
+draw was measured; it says nothing about whether another draw would agree. So the
+full pipeline was re-run end to end on five independent seeds, keyless, each a
+fresh 6,000-event five-type batch with its own arm assignment and its own latent
+world.
+
+| Seed | C−A lift | 95% BCa CI | C−B lift | Incremental |
+|---|---|---|---|---|
+| **42** (committed default) | **+10.43pp** | [+7.63, +13.33] | +9.12pp | **₹88,747** |
+| 7 | +11.04pp | [+8.19, +13.84] | +7.85pp | ₹8,99,561 |
+| 13 | +8.38pp | [+5.66, +11.28] | +6.12pp | ₹3,08,809 |
+| 99 | +10.02pp | [+7.27, +12.82] | +5.68pp | ₹11,18,901 |
+| 2024 | +9.72pp | [+6.87, +12.52] | +8.88pp | ₹12,82,073 |
+
+**C−A: mean +9.92pp, range +8.38 to +11.04. C−B: mean +7.53pp, range +5.68 to
++9.12. All ten intervals exclude zero.** The effect is not an artifact of one
+lucky split: the direction never flips and the magnitude moves under three points
+across five worlds.
+
+**The rupee figure does not replicate, and that is the point of showing this.** It
+spans ₹0.89L to ₹12.82L — a 14× range on the same five draws. That is the
+log-normal amount distribution doing exactly what `metrics.py` says it does: a
+handful of band-5 events move a mean far more than any single event moves a
+proportion. A rate is bounded and a sum of heavy-tailed draws is not.
+
+Two consequences this project accepts rather than hides:
+
+1. **The headline is the pp, not the ₹.** The rupee figure is reported because a
+   merchant thinks in rupees, but it is one draw's illustration of a lift, never
+   the claim itself.
+2. **Seed 42 is the lowest of the five, and stays the default.** Every committed
+   artifact — the ledger, the dashboard, `actions.csv`, the golden files — is
+   built from it, and swapping to a seed with a better rupee figure after seeing
+   the results is precisely the selection this document exists to rule out. The
+   worst draw of five is the one that ships.
+
+Reproduce any row with `PRAMAAN_LLM_OFFLINE=1 python -m pramaan.cli execute --full
+--seed <n> --out <dir>` (~3–8 min each, no API key).
 
 ---
 
@@ -76,9 +121,9 @@ Three arms, equal thirds, assigned **at detection** and never re-derived.
 
 | Arm | Behaviour | n (6,000 batch) |
 |---|---|---|
-| **A** — control | Detected, diagnosed, logged, **not acted on** | 2,003 |
-| **B** — rules-only | `taxonomy.DEFAULT_ACTION_BY_CLASS` + that table's own `retry_mode` | 2,001 |
-| **C** — LLM-planned | investigator → planner → policy envelope; wired Day 5, run live Days 6–7 | 1,996 |
+| **A** — control | Detected, diagnosed, logged, **not acted on** | 2,000 |
+| **B** — rules-only | `taxonomy.DEFAULT_ACTION_BY_CLASS` + that table's own `retry_mode` | 1,999 |
+| **C** — LLM-planned | investigator → planner → policy envelope; wired Day 5, run live Days 6–7 | 2,001 |
 
 **Stratified** on `(source_type × amount_band × segment)` in permuted blocks of
 three. Order amounts are log-normal, so a simple coin flip lets a handful of very

@@ -14,9 +14,9 @@ transaction — customers fix a wrong UPI PIN and retry inside their banking app
 
 Every event is randomly assigned to one of three arms — **A** control (detected,
 logged, not acted on), **B** rules-only, **C** LLM-planned — stratified on (event
-type × amount band × segment). The reported number is **C − A: +17.49pp of at-risk
-events, 95% CI [+14.64, +20.45]** (BCa bootstrap, 10,000 resamples), which is
-₹7,44,967 incremental against ₹59,91,945 gross. Arm A *is* the population that
+type × amount band × segment). The reported number is **C − A: +10.43pp of at-risk
+events, 95% CI [+7.63, +13.33]** (BCa bootstrap, 10,000 resamples), which is
+₹88,747 incremental against ₹47,54,868 gross. Arm A *is* the population that
 recovers on its own, measured. → `eval/`, `EVALUATION.md`.
 
 And the estimator itself is validated: in simulation both potential outcomes are
@@ -66,7 +66,7 @@ order status before acting and aborts on `order_already_paid` (S1). →
 
 ### "What does it cost per rupee recovered?"
 
-**₹0.0003 per incremental rupee** — cost ₹214.40 against ₹7,44,967 incremental.
+**₹0.0017 per incremental rupee** — cost ₹153.65 against ₹88,747 incremental.
 Retries are free; only `ACT_MESSAGE` / `ACT_VOICE` carry a per-contact cost, and
 the planner's key move is an *immediate, silent, server-side retry* where the
 lookup table waits — recovering the payment at zero contact cost. Cost is charged

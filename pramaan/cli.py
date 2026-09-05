@@ -29,6 +29,7 @@ from pramaan.eval import metrics as eval_metrics
 from pramaan.eval import resolve as eval_resolve
 from pramaan.ledger.chain import Ledger
 from pramaan.llm.client import LLMClient
+from pramaan.report.snapshot import write_metrics
 from pramaan.sense.models import RiskEvent
 from pramaan.sense.store import EventStore, connect, ingest
 from sim import generate as sim
@@ -140,8 +141,17 @@ def gate_events(events: Sequence[RiskEvent], ledger: Ledger) -> dict:
 
 def run_demo(batch: str, seed: int, out_dir: Path) -> int:
     config = load_config()
+    # The full batch spans all five source types; the dev batch stays
+    # payment-only. That asymmetry is deliberate. The full batch is the
+    # *measurement* batch -- the one the headline is quoted from -- and a
+    # headline that says "across all five event types" has to be measured across
+    # all five, which until now it was not: both entrypoints called
+    # ``full_batch`` (payment only) while ``full_batch_all_types`` sat unused
+    # since Day 6. The dev batch is the *regression* batch, pinned byte-for-byte
+    # by ``tests/golden/ledger.jsonl``, and re-cutting it would churn that golden
+    # without making any claim truer.
     events: List[RiskEvent] = (
-        sim.dev_batch(seed) if batch == "dev" else sim.full_batch(seed)
+        sim.dev_batch(seed) if batch == "dev" else sim.full_batch_all_types(seed)
     )
 
     db_path = out_dir / ("pramaan-%s.db" % batch)
@@ -302,8 +312,31 @@ def run_demo(batch: str, seed: int, out_dir: Path) -> int:
     metrics = _print_recovery(events, outcomes, seed, batch)
 
     # -- distribution ------------------------------------------------------
-    _section("DISTRIBUTION -- reason buckets (PRD 5.1)")
-    shares = sim.bucket_shares(events)
+    #
+    # Over the *payment* events, not the whole batch. ``BUCKET_WEIGHTS`` is a
+    # calibration of Razorpay payment failure codes against the ranges the
+    # README publishes, and ``bucket_of`` answers ``long_tail`` for any code it
+    # does not recognise -- which is every code the checkout, subscription,
+    # mandate and receivable adapters emit.
+    #
+    # Measured on the five-type full batch, comparing all 6,000 events against a
+    # payment calibration put long_tail at 47.2% against a declared 4%, and
+    # scaled every real bucket by exactly the payment share (0.37 -> 0.2057,
+    # i.e. x0.556). That is not a distribution that drifted; it is a payment
+    # figure being asked about a batch that is 45% not-payments. The fix is to
+    # ask the question of the population the number describes.
+    payment_events = [e for e in events if e.source_type == "payment"]
+    _section("DISTRIBUTION -- payment reason buckets (PRD 5.1)")
+    shares = sim.bucket_shares(payment_events)
+    if len(payment_events) != len(events):
+        print(
+            "  over %s payment events of %s in the batch; the other %s carry "
+            "codes from the checkout, subscription, mandate and receivable"
+            % (_thousands(len(payment_events)), _thousands(len(events)),
+               _thousands(len(events) - len(payment_events)))
+        )
+        print("  adapters, which this payment calibration does not describe.")
+        print()
     print("  %-22s %8s %8s  %-13s" % ("bucket", "declared", "observed", "published"))
     for bucket, weight in sim.BUCKET_WEIGHTS.items():
         published = sim.PUBLISHED_RANGES.get(bucket)
@@ -426,8 +459,8 @@ def run_demo(batch: str, seed: int, out_dir: Path) -> int:
         ("a truncated tail is detected (I7)", truncation.startswith("detected")),
         ("declared weights inside the published ranges", _declared_weights_ok()),
         (
-            "observed draw consistent with declared weights (3 s.e.)",
-            _observed_matches_declared(shares, len(events)),
+            "observed payment draw consistent with declared weights (3 s.e.)",
+            _observed_matches_declared(shares, len(payment_events)),
         ),
         ("every amount band populated", all(histogram[b] > 0 for b in canonical.AMOUNT_BANDS)),
         # I3: the envelope returned a verdict AND a rule id for every action it
@@ -1245,6 +1278,8 @@ def run_investigate(seed: int, out_dir: Path, count: int, days: int) -> int:
     config = load_config()
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    from pramaan.investigate import canary
+
     events, truth = dev_batch_degraded(seed=seed, count=count, days=days)
     traffic = build_traffic(events, seed, DEV_INCIDENT)
     downtime = build_downtime(DEV_INCIDENT)
@@ -1288,6 +1323,7 @@ def run_investigate(seed: int, out_dir: Path, count: int, days: int) -> int:
 
     client = LLMClient(config)
     sessions = []
+    canary_verdicts = []
     audits = []
 
     for incident in incidents:
@@ -1327,6 +1363,24 @@ def run_investigate(seed: int, out_dir: Path, count: int, days: int) -> int:
             ts=ts,
             payload=session.audit.as_ledger_payload(),
         )
+
+        # The canary: check the session's own tool log against the arithmetic
+        # the decomposition tool returns, and retract any verdict it refutes.
+        #
+        # This was written on Day 6, tested, and never called by anything --
+        # ``CANARY`` and ``RETRACTION`` were the two ``LEDGER_KINDS`` values no
+        # command emitted, while README's metrics table headlined "Canary
+        # confirmed the injected incident's rate/mix split exactly". The
+        # mechanism was real; the claim was simply not reproducible by anyone
+        # who ran the command. ``tests/test_ledger_kind_coverage.py`` already
+        # drove this exact sequence, which is why the golden had the rows.
+        #
+        # A third assertion, deliberately separate from the two above: DIAGNOSIS
+        # is what the model said, RECEIPT_AUDIT is what survived a check of its
+        # citations, and CANARY is whether the conclusion survives the numbers.
+        verdict = canary.run_canary_for_session(session, truth)
+        canary.write_canary_result(ledger, ts=ts, arm=None, verdict=verdict)
+        canary_verdicts.append(verdict)
     conn.commit()
 
     for session in sessions:
@@ -1379,6 +1433,31 @@ def run_investigate(seed: int, out_dir: Path, count: int, days: int) -> int:
     print("  A second run of this command makes zero network calls and consumes")
     print("  zero tokens: every turn prompt is a pure function of the incident,")
     print("  the transcript so far and the turn number, so the cache keys repeat.")
+
+    # The canary's verdict, printed rather than left in the ledger. A row nobody
+    # reads is not a reproducible claim: README's metrics table asserts the
+    # canary confirmed the split, and this is where a reviewer running the
+    # command actually sees it.
+    if canary_verdicts:
+        _section("CANARY -- does the conclusion survive the arithmetic?")
+        print("  The decomposition tool returns three terms that sum to the observed")
+        print("  change exactly. The canary re-derives which segment moved on rate and")
+        print("  which on mix, and compares that to the session's own claim.")
+        print()
+        for verdict in canary_verdicts:
+            agrees_rate = verdict.observed_rate_segment == verdict.truth_rate_segment
+            agrees_mix = verdict.observed_mix_segment == verdict.truth_mix_segment
+            print("  verdict              %s" % verdict.verdict)
+            print("  rate shift segment   observed %s / truth %s   %s"
+                  % (verdict.observed_rate_segment, verdict.truth_rate_segment,
+                     "match" if agrees_rate else "MISMATCH"))
+            print("  mix shift segment    observed %s / truth %s   %s"
+                  % (verdict.observed_mix_segment, verdict.truth_mix_segment,
+                     "match" if agrees_mix else "MISMATCH"))
+        print()
+        print("  A REFUTED verdict additionally writes a RETRACTION row, which is the")
+        print("  system withdrawing a claim it had already made. Confirmation is the")
+        print("  common case and is recorded just as deliberately.")
 
     _section("LEDGER")
     verification = ledger.verify_chain()
@@ -1578,8 +1657,17 @@ def run_execute(
     from pramaan.execute.runner import run_shadow
 
     config = load_config()
+    # The full batch spans all five source types; the dev batch stays
+    # payment-only. That asymmetry is deliberate. The full batch is the
+    # *measurement* batch -- the one the headline is quoted from -- and a
+    # headline that says "across all five event types" has to be measured across
+    # all five, which until now it was not: both entrypoints called
+    # ``full_batch`` (payment only) while ``full_batch_all_types`` sat unused
+    # since Day 6. The dev batch is the *regression* batch, pinned byte-for-byte
+    # by ``tests/golden/ledger.jsonl``, and re-cutting it would churn that golden
+    # without making any claim truer.
     events: List[RiskEvent] = (
-        sim.dev_batch(seed) if batch == "dev" else sim.full_batch(seed)
+        sim.dev_batch(seed) if batch == "dev" else sim.full_batch_all_types(seed)
     )
 
     db_path = out_dir / ("pramaan-execute-%s.db" % batch)
@@ -1606,6 +1694,16 @@ def run_execute(
     print("  verify_chain         %s" % ("PASS" if verification.ok else "FAIL"))
     export = ledger.export_jsonl(out_dir / ("execute-%s.jsonl" % batch))
     print("  exported             %s" % _display_path(export))
+
+    # The contrast the report above just printed, serialised for the dashboard.
+    # This computes nothing: it is `result.metrics`, the same object the report
+    # is derived from, written to disk. The dashboard reads this file rather
+    # than re-deriving a headline, so the rendered number and the printed number
+    # cannot drift apart -- `eval/metrics.py`'s "two truths and no audit trail".
+    metrics_file = write_metrics(
+        result.metrics, out_dir / ("execute-%s-metrics.json" % batch)
+    )
+    print("  metrics              %s" % _display_path(metrics_file))
 
     if live_razorpay:
         _section("LIVE -- Razorpay TEST mode")

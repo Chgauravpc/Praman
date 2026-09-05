@@ -196,6 +196,39 @@ ACTIONS: Tuple[str, ...] = (
     "ACT_STOP",            # terminal -- one of S1..S7 fired
 )
 
+# **ACT_VOICE and ACT_CONCESSION have zero occurrences in the committed batch.**
+# Measured, not assumed: across all 303 ``PLAN`` rows of ``execute --full``
+# (every step, not just the first) and all 6,000 ``OUTCOME`` rows of
+# ``demo --full``, both are proposed 0 times and executed 0 times. The planner
+# reaches for retry / message / wait, which cover the reason classes this batch
+# generates; a call or a waiver is never the cheapest first action for them.
+#
+# **This is not the defect ADR-011 names for LEDGER_KINDS**, and the distinction
+# is the whole point of writing it down. That rule -- "a kind is added when
+# something writes it, not when something plans to" -- forbids an enum member
+# with no implementation behind it. Both of these have one:
+#
+#   - offered to the model in ``llm/prompts.py``'s action menu, with tier and
+#     approval requirement, so the planner genuinely *can* select either;
+#   - admitted by ``schemas.py``'s plan schema, so a reply choosing one validates;
+#   - tiered and gated -- ACT_VOICE at T3 behind the P2 Rs 500 floor and
+#     R8/R9/R10, ACT_CONCESSION at T4 behind P3's Rs 5,000 approval cap
+#     (``envelope/tiers.py``, ``envelope/registry.py``);
+#   - exercised by ``tests/test_envelope_matrix.py``'s rule-coverage sweep, which
+#     feeds ACT_CONCESSION Rs 5,00,000 specifically to reach the P3 gate;
+#   - and ACT_VOICE runs end to end in ``converse/voice.py``, judged by the real
+#     envelope, writing CONVERSE and PROMISE rows to the chain.
+#
+# So what is missing is an *occurrence*, not a writer. They stay in the
+# vocabulary because the gate is the deliverable: dropping ACT_CONCESSION would
+# mean deleting P3 and its test -- removing a working guardrail because one seed
+# did not happen to trip it -- and ``ACTION_TIER``'s import-time completeness
+# check would force both edits in the same commit anyway.
+#
+# What a reader should NOT conclude from the 0s: that the agent "can place a
+# voice call" as part of batch recovery. It cannot, today -- no planner run has
+# ever chosen to. The voice loop is driven separately by ``make voice``.
+
 # --------------------------------------------------------------------------
 # Hour bucketing -- three values, each a distinct legal state
 # --------------------------------------------------------------------------

@@ -1,11 +1,27 @@
 # Pramaan — AI Revenue Recovery
 
 **On 6,000 revenue-at-risk events spanning all five event types, Pramaan's
-LLM-planned arm recovered ₹7,44,967 incremental against a randomised control
-arm — a +17.49pp lift in recovery rate (95% CI +14.64 to +20.45pp, BCa,
-10,000 resamples). Gross recovery was ₹59,91,945, roughly 8× the incremental.
-Most of that gross was customers retrying on their own, and this repo shows
-you the difference — reproducibly, with no API key.**
+LLM-planned arm lifted recovery by +10.43pp against a randomised control arm
+(95% CI +7.63 to +13.33pp, BCa, 10,000 resamples), worth ₹88,747 incremental.
+Gross recovery was ₹47,54,868, roughly 4.9× the incremental. Most of that gross
+was customers retrying on their own, and this repo shows you the difference —
+reproducibly, with no API key.**
+
+**The lift replicates; the rupees are a lottery.** Re-run on five independent
+seeds, the recovery-rate lift lands between **+8.38pp and +11.04pp** (mean
++9.92) and **every one of the ten intervals excludes zero** — C−A and C−B alike.
+The rupee figure on the same five draws spans **₹0.89L to ₹12.82L**, a 14×
+range, because order amounts are log-normal and a handful of band-5 events move
+a mean that no single event can move a proportion. **Seed 42 — the committed
+default everything here reproduces from — is the lowest of the five.** It stays
+the default anyway: the honest thing is to ship the draw the artifacts were
+built on, not to go shopping for a flattering one. Read the pp.
+
+**The envelope refused 1,140 of those 6,000 proposed actions outright**, every
+one citing RBI's e-mandate pre-debit notification rule (R1). That is the number
+worth reading twice: recovery on mandates and subscriptions is capped by law,
+not by the agent, and a system that cannot show you its refusals has not been
+tested against the part of the problem that bites.
 
 Razorpay's own webhook docs warn that `payment.failed` is often followed by
 `payment.captured` for the same transaction — customers fix a wrong UPI PIN
@@ -17,21 +33,27 @@ git clone <this repo> && cd pramaan && make demo   # ~40s, NO API KEY, reproduce
 make execute-full                                  # ~2.5m, NO API KEY, reproduces the headline number
 ```
 
-![make execute-full, keyless, reproduces the headline from the committed cache: C-A +17.49pp, C-B +16.91pp (both excluding zero), Rs 7,44,967.63 incremental, ALL CHECKS PASS](assets/demo.gif)
+![make execute-full on the earlier payment-only batch: C-A +17.49pp, C-B +16.91pp (both excluding zero), Rs 7,44,967.63 incremental, ALL CHECKS PASS](assets/demo.gif)
 
-*The GIF is a faithful render of the real `make execute-full` output (deterministic bytes → deterministic frames), not a screen capture and not staged. Both commands run offline from the committed cache.*
+*The GIF is a faithful render of real `make execute-full` output (deterministic
+bytes → deterministic frames), not a screen capture and not staged.* **⚠ It
+records the earlier payment-only batch and therefore shows the older figures
+(+17.49pp, ₹7,44,967), not the five-type numbers above.** *It is kept, clearly
+labelled, rather than quietly deleted or captioned as though it matched — but it
+needs re-recording before submission. Both commands run offline from the
+committed cache.*
 
 🔊 **[Hinglish recovery call — 29s MP3](assets/voice-demo.mp3)** · **[transcript, for review on mute](assets/voice-transcript.md)** — a two-voice Sarvam **TTS** rendering of a scripted Hinglish recovery call. It opens with the **AI disclosure (R10)**, and the agent's turn policy, envelope gating, and promise extraction are all real: the customer's line *"Friday tak pakka kar dunga"* becomes a structured promise on the hash-chained ledger. **Honest scope:** the customer lines here are a scripted transcript, *not* transcribed audio — the Sarvam **STT** leg is implemented and verified to transcribe the Hinglish audio, but the shipped clip does not run it ([why](LIMITATIONS.md#the-voice-clip-is-real-tts-of-a-scripted-call-the-stt-leg-is-not-exercised-in-it)). `make voice` reproduces the transcript keyless; `make voice-live` synthesises the audio.
 
 | Metric | Value |
 |---|---|
-| **Incremental recovery** | **+17.49pp** recovery-rate lift (95% CI +14.64, +20.45) vs randomised holdout; **₹7,44,967** incremental |
-| Did the LLM earn its place (C−B) | **+16.91pp** [+13.96, +19.81], excludes zero; exact true effect **+14.07pp** |
-| Investigator | Canary **confirmed** the injected incident's rate/mix split exactly (tier2 rate, tier3 mix); refutation path proved separately |
-| Planner violation rate | **0.0%** organic — but note the base: only **36 of 273** signatures are LLM-authored (the other 185 are the deterministic fallback = arm B's already-compliant table), so this is a thin live population, not a broad compliance claim. Separately, the envelope caught **100%** of 26 engineered violations (one per R1–R11 + G1–G8) |
+| **Incremental recovery** | **+10.43pp** recovery-rate lift (95% CI +7.63, +13.33) vs randomised holdout; **₹88,747** incremental. Across 5 seeds: **+8.38 to +11.04pp**, all excluding zero |
+| Did the LLM earn its place (C−B) | **+9.12pp** [+6.32, +12.07], excludes zero; exact true effect **+7.88pp**. Across 5 seeds: **+5.68 to +9.12pp**, all excluding zero |
+| Investigator | Canary **confirmed** the injected incident's rate/mix split exactly — observed tier2 rate / tier3 mix against truth tier2 / tier3. `make investigate` prints the verdict and writes a `CANARY` row; a refuted verdict additionally writes a `RETRACTION`, the system withdrawing a claim it had already made |
+| Planner violation rate | **19.0%** organic, event-weighted (**7.7%** per distinct signature) — the planner proposes something the envelope must correct on nearly a fifth of traffic, almost all of it mandate debits hitting R1. Base: **33 of 303** signatures are LLM-authored, the rest the deterministic fallback. Separately, the envelope caught **100%** of 26 engineered violations (one per R1–R11 + G1–G8) |
 | Receipt coverage | **100%** of diagnosis claims backed by a real tool call |
-| Cost per incremental ₹ | **₹0.0003** (retries are free; only voice/message carry a per-contact cost) |
-| Envelope activity | **1,095** actions amended / **0** hard-rejected on the 6,000-event gate, each citing its rule → [breakdown](SAFETY.md) |
+| Cost per incremental ₹ | **₹0.0017** (retries are free; only voice/message carry a per-contact cost) |
+| Envelope activity | **935** actions amended / **1,140** hard-rejected on the 6,000-event gate, each citing its rule → [breakdown](SAFETY.md) |
 
 > **Design for three time budgets** (respecting a reviewer's time is itself a signal):
 > **60 seconds** — the number above and the voice clip · **5 minutes** — the pitch video ·
@@ -109,20 +131,31 @@ and conversation instead.
 All three arms are measured. The two contrasts, on the full 6,000-event batch,
 reproduced offline from the committed cache with **no API key**:
 
-> **C − A — does the LLM-planned loop recover money? +17.49pp of at-risk events,
-> 95% CI [+14.64, +20.45].** Excludes zero. **₹7,44,967 incremental**, 96 customers
-> contacted, cost ₹214.40 (₹0.0003 per incremental ₹).
+> **C − A — does the LLM-planned loop recover money? +10.43pp of at-risk events,
+> 95% CI [+7.63, +13.33].** Excludes zero. **₹88,747 incremental**, 191 customers
+> contacted, cost ₹153.65 (₹0.0017 per incremental ₹).
 
-*Two honest notes on these figures. The ₹ and pp are the seed-42 draw; a different
-seed gives a different draw (e.g. seed 7 → ₹3.44L incremental), which is why the
-number is reported with its CI rather than as a point.* ***The 96-contacted count,
-by contrast, is seed-invariant*** *— contact eligibility is fixed by the class-weight
-distribution and the P2 value floor, not by the per-event latent draws, so which
-events are contactable barely moves while what they recover does.*
+**Read the pp, not the ₹.** *The rate lift is stable across seeds and the rupee
+figure is not, because order amounts are log-normal and a handful of large events
+move a mean far more than any single event moves a proportion. Seed 42 gives
++10.43pp / ₹88,747; seed 7 gives* ***+11.04pp / ₹8,99,561*** *— the lift moves
+0.6pp and the money moves 10×. Quoting ₹88,747 as "the" number would be as
+misleading as quoting ₹8,99,561; the interval on the rate is the claim, and the
+rupees are one draw's illustration of it.* ***The contacted count is
+near-invariant too*** *(191 at seed 42, 183 at seed 7) — contact eligibility is
+fixed by the class-weight distribution and the P2 value floor, not by the
+per-event latent draws, so which events are contactable barely moves while what
+they recover does.*
 >
-> **C − B — did the LLM earn its place over the lookup table? +16.91pp, 95% CI
-> [+13.96, +19.81].** Excludes zero, and the exact true effect (**+14.07pp**,
+> **C − B — did the LLM earn its place over the lookup table? +9.12pp, 95% CI
+> [+6.32, +12.07].** Excludes zero, and the exact true effect (**+7.88pp**,
 > potential outcomes) confirms it is real rather than sampling noise.
+>
+> **On rate, yes. On value, no** — C − B's value-weighted contrast is
+> **−6.33pp** of at-risk rupees. Arm C recovers more *events* than the lookup
+> table and fewer *rupees*, because the events it wins are the cheap ones. Both
+> figures come from the same run and both are printed; a headline that quoted
+> only the first would be picking the flattering half of one contrast.
 
 What the LLM actually decided, inspected directly: for `TECH_TRANSIENT` and
 `AUTH_DROPOFF` — the two highest-volume classes — the planner proposes an
@@ -173,8 +206,8 @@ estimate**, so the agreement above is not circular.
 Intervals are **BCa bootstrap, 10,000 resamples**, never a normal approximation:
 order amounts are log-normal, and the demo prints two heavy-tail signatures to
 show the interval was read off the resample distribution rather than a standard
-error — the money interval is 5.8× relatively wider than the rate interval, and
-it is visibly asymmetric (1.23 upper/lower) where a normal interval is 1.00 by
+error — the money interval is relatively wider than the rate interval, and it is
+visibly asymmetric (1.35 upper/lower) where a normal interval is 1.00 by
 construction.
 
 Full method, calibration and threats to validity: **[EVALUATION.md](EVALUATION.md)**.
@@ -312,9 +345,57 @@ make investigate # the LLM investigator, from the committed cache
 make voice       # the Hinglish recovery call -> transcript + ledger, keyless
 make voice-live  # the same, synthesised to assets/voice-demo.mp3 (needs SARVAM_API_KEY)
 make models      # print the configured model IDs and check they still resolve
-make test        # 584 tests, including the invariants below
+make dashboard   # aggregate the committed ledger into build/dashboard.json
+make test        # 672 tests, including the invariants below
 make verify      # tests, plus a byte-identical-output check across two runs
 ```
+
+`make dashboard` needs `make demo-full` (for the ledger) and `make execute-full`
+(for the contrast tiles) to have run first. It opens those artifacts read-only,
+aggregates them into one JSON file, and re-runs nothing — so it cannot move a
+number the two commands above already fixed.
+
+To **drive the pipeline from the page** rather than only read its output:
+
+```bash
+python -m pramaan.report.server    # then open http://127.0.0.1:8000/dashboard/
+```
+
+That serves the same static files *and* exposes a small run API, so the
+dashboard gets a **Run it** panel: click `demo-dev` and the real
+`python -m pramaan.cli demo --dev` starts, its stdout streams into the page, and
+when it finishes the ledger is re-aggregated and every tile updates in place —
+6,000 events become 200, and the gate counts change with them. Click
+`snapshot` to come back to the full batch in about five seconds.
+
+The server runs a **fixed table of commands** keyed by id; nothing from the
+request reaches a shell, it binds to `127.0.0.1` only, it refuses a second
+concurrent run (two writers on one SQLite ledger is a corrupted ledger), and it
+forces `PRAMAAN_LLM_OFFLINE=1` on every run — so no button can spend a token or
+open a socket. It reimplements nothing: every button is the CLI a reviewer would
+type, so there is still exactly one path into the envelope.
+
+A plain static server still works, and the page degrades to the read-only report
+it was — the run and replay panels simply stay hidden:
+
+```bash
+python -m http.server 8000   # then open http://localhost:8000/dashboard/
+```
+
+The page renders no figure it computes itself. Every contrast comes from the
+`BatchMetrics` object `make execute-full` printed, serialised to disk by the same
+run, and every count is a count of rows that exist in the chain — whose head hash
+is displayed so it can be compared against the one the demo prints.
+
+`make dashboard` also writes **`build/actions.csv`** — one line per resolved
+event (6,000 rows, 20 columns), joined across its `DETECT`/`GATE`/`OUTCOME`/
+`EXCEPTION` ledger rows, including the envelope's verbatim reason for every
+refusal. Open it in a spreadsheet directly, or browse it in the dashboard's
+**Every row** section, which filters by arm, source type, action, gate verdict
+and outcome, exports the filtered subset as CSV, and prints to PDF through the
+browser's own print dialog. No latent field is in it: the counterfactual answer
+key stays quarantined in its own table (ADR-010), so the export is an audit
+artifact and not an answer sheet.
 
 `make models` exists because of a genuine and slightly embarrassing finding: the
 two model IDs this repo carried for its first three days had been switched off by
