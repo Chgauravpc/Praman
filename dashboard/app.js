@@ -1445,7 +1445,18 @@ function startCall() {
   armMicrophone()
     .then(function () {
       callStatus('the agent is introducing itself (Sarvam TTS)…');
-      return fetch('/api/call/start', { method: 'POST' }).then(function (r) { return r.json(); });
+      return fetch('/api/call/start', { method: 'POST' }).then(function (r) {
+        /* A 404 here means one specific thing, and it is not a missing feature:
+         * the page is newer than the process serving it. Static files are read
+         * per request, so the button appears as soon as the file changes, but
+         * the route table was fixed when the server booted. Saying "unknown
+         * endpoint" sends the reader looking for a bug in the wrong place. */
+        if (r.status === 404) {
+          throw new Error('this server was started before the live-call route ' +
+            'existed — stop it and re-run `python -m pramaan.report.server`');
+        }
+        return r.json();
+      });
     })
     .then(function (data) {
       if (data.error) {
