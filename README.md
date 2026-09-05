@@ -240,7 +240,7 @@ policy for every ticket either.
 **Shipped — all eight days landed.** The spine, the compliance envelope, the
 three-arm measurement layer, the LLM investigator, the planner+executor, all five
 adapters, the promise machine, the canary, and the Hinglish voice loop are built,
-tested, and reproducible offline. **584 tests, 0 skipped.**
+tested, and reproducible offline. **692 tests, 0 skipped.**
 
 The whole loop, end to end:
 
@@ -346,9 +346,14 @@ make voice       # the Hinglish recovery call -> transcript + ledger, keyless
 make voice-live  # the same, synthesised to assets/voice-demo.mp3 (needs SARVAM_API_KEY)
 make models      # print the configured model IDs and check they still resolve
 make dashboard   # aggregate the committed ledger into build/dashboard.json
-make test        # 690 tests, including the invariants below
+make test        # 692 tests, including the invariants below
 make verify      # tests, plus a byte-identical-output check across two runs
 ```
+
+`pytest` on its own is equivalent: `tests/conftest.py` sets
+`PRAMAAN_LLM_OFFLINE=1` unless you have already set it, so the suite cannot
+reach a model by accident. It is `setdefault`, not an assignment — an explicit
+`PRAMAAN_LLM_OFFLINE=0` still wins.
 
 `make dashboard` needs `make demo-full` (for the ledger) and `make execute-full`
 (for the contrast tiles) to have run first. It opens those artifacts read-only,
@@ -375,8 +380,28 @@ forces `PRAMAAN_LLM_OFFLINE=1` on every run — so no button can spend a token o
 open a socket. It reimplements nothing: every button is the CLI a reviewer would
 type, so there is still exactly one path into the envelope.
 
+### Talk to it
+
+The same server exposes the one path in this project that **cannot** be keyless:
+a real conversation with the agent. Press **Start call** and the agent speaks
+first — R10's requirement is that the AI disclosure is the *first utterance*, not
+that it appears somewhere in the transcript, so the opening is a separate
+endpoint from a turn and the ordering is structural. Then hold the button and
+reply in Hinglish. One turn is `your voice → Sarvam STT (saaras:v3) → the
+turn-policy LLM → Sarvam TTS (bulbul:v3) → audio you hear`, and a commitment in
+what you said is extracted into the promise state machine and shown against the
+verbatim line it came from.
+
+This is the honest exception to everything above: it needs `SARVAM_API_KEY` plus
+an LLM key, it spends money per turn, and it cannot be replayed from the fixture
+cache — a conversation that has not happened yet cannot have been recorded. The
+envelope still gates it: the preflight ruling, with the rule id and the citation,
+is printed above the transcript before the first word. Everything *else* on the
+page runs with `PRAMAAN_LLM_OFFLINE=1` forced and no key at all.
+
 A plain static server still works, and the page degrades to the read-only report
-it was — the run and replay panels simply stay hidden:
+it was — the replay and live-call panels stay hidden, and the **Run it** panel
+says why it has no buttons:
 
 ```bash
 python -m http.server 8000   # then open http://localhost:8000/dashboard/

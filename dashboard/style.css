@@ -1040,55 +1040,6 @@ table.rows td .false { color: var(--dim); }
 
 .facet .section-note { margin-bottom: .7rem; font-size: .76rem; }
 
-/* -- the planner ------------------------------------------------------- */
-
-.plan {
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-left: 3px solid var(--good);
-  border-radius: 6px;
-  padding: .85rem 1.05rem;
-  margin-bottom: .7rem;
-}
-
-.plan-head {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: .55rem;
-  margin-bottom: .5rem;
-}
-
-.plan-channel { font-family: var(--mono); font-size: .72rem; color: var(--muted); }
-
-/* The model's own words. Set in the body face, not mono: it is prose, and
- * monospacing it would make it read as machine output rather than an argument. */
-.plan-why { margin: 0 0 .4rem; font-size: .89rem; color: var(--ink); max-width: 78ch; }
-.plan-why.step { color: var(--muted); font-size: .84rem; }
-
-.plan-meta { display: flex; flex-wrap: wrap; gap: .4rem 1.3rem; margin-bottom: .5rem; }
-
-.plan-fact { display: inline-flex; align-items: baseline; gap: .35rem; }
-
-.plan-fact-k {
-  font-family: var(--mono);
-  font-size: .64rem;
-  text-transform: uppercase;
-  letter-spacing: .06em;
-  color: var(--dim);
-}
-
-.plan-fact-v { font-family: var(--mono); font-size: .74rem; color: var(--ink); }
-
-.plan-sig {
-  font-family: var(--mono);
-  font-size: .66rem;
-  color: var(--dim);
-  overflow-wrap: anywhere;
-  padding-top: .45rem;
-  border-top: 1px solid var(--line);
-}
-
 .bar-group-label {
   font-family: var(--mono);
   font-size: .68rem;

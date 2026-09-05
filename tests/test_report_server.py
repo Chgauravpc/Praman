@@ -253,3 +253,48 @@ def test_resetting_the_call_clears_the_transcript():
     assert S.CALL.turns == []
     assert S.CALL.started is False
     assert S.CALL.promise is None
+
+
+def test_the_agent_opens_without_a_key_is_refused(monkeypatch):
+    """Opening a call is the same keyed path as taking a turn, and says so."""
+    from pramaan.config import Config
+
+    monkeypatch.setattr(
+        "pramaan.config.load_config",
+        lambda: Config(seed=42, mode="shadow", llm_offline=True, sarvam_api_key=None),
+    )
+    S.CALL.reset()
+    with pytest.raises(RuntimeError, match="SARVAM_API_KEY"):
+        S._live_call_open()
+
+
+def test_the_first_utterance_of_a_live_call_is_the_disclosure(monkeypatch):
+    """R10's requirement is ordering, not presence.
+
+    A transcript that discloses the AI in turn four satisfies "the disclosure
+    appears" and violates the rule. ``_live_call_open`` exists so the agent
+    speaks before the human does, and this reads index 0 to confirm what it
+    said. TTS is stubbed: the assertion is about sequence, not audio.
+    """
+    from pramaan.config import Config
+    from pramaan.converse import voice
+
+    monkeypatch.setattr(
+        "pramaan.config.load_config",
+        lambda: Config(seed=42, mode="shadow", llm_offline=True,
+                       sarvam_api_key="test-key-not-used"),
+    )
+    monkeypatch.setattr(voice.SarvamClient, "synthesize",
+                        lambda self, text: b"\xff\xfb" + text.encode("utf-8")[:4])
+    S.CALL.reset()
+    opened = S._live_call_open()
+
+    assert [t["speaker"] for t in opened["turns"]] == ["agent", "agent"], (
+        "the human has not spoken yet -- that is the whole point"
+    )
+    assert opened["turns"][0]["text"] == voice.DISCLOSURE_LINE
+    assert opened["ruling"]["verdict"] != "REJECT"
+    assert S.CALL.started is True, (
+        "so the first human turn does not replay the opening on top of itself"
+    )
+    S.CALL.reset()

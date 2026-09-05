@@ -702,8 +702,6 @@ def test_a_called_but_unusable_reply_is_not_counted_as_authored(tmp_path: Path):
     assert plans["counts"] == {"no_call": 1, "unreadable": 1, "llm_authored": 1}
     assert plans["called"] == 2, "called counts both id-bearing plans"
     assert plans["usable_reply_rate"] == 0.5
-    assert len(plans["authored"]) == 1
-    assert plans["authored"][0]["rationale"].startswith("Instrument dead")
 
 
 def test_the_three_buckets_account_for_every_plan(tmp_path: Path):
@@ -735,16 +733,25 @@ def test_a_missing_plan_export_is_absent_not_an_error(tmp_path: Path):
     assert S.read_plans(tmp_path / "never-written.jsonl") is None
 
 
-def test_the_authored_sample_is_capped(tmp_path: Path):
-    """So a warmer cache cannot quietly turn the snapshot into a megabyte."""
+def test_no_plan_prose_is_carried_into_the_snapshot(tmp_path: Path):
+    """The planner view reports counts; it never carries the model's prose.
+
+    An earlier revision kept a capped sample of rationales so the page could
+    print them verbatim. That made the snapshot's size a function of cache
+    warmth, and it put untrusted model text on the page for no analytical
+    gain -- the three-way split is the claim, and a wall of prose does not
+    support it. The sample is gone. This test is what keeps it gone.
+    """
     path = tmp_path / "plans.jsonl"
-    lines = [_plan_line(i, call_ids=["c%d" % i], rationale="real reason %d" % i)
-             for i in range(S.PLAN_SAMPLE_CAP + 10)]
+    lines = [_plan_line(i, call_ids=["c%d" % i], rationale="SECRET-PROSE-%d" % i)
+             for i in range(50)]
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     plans = S.read_plans(path)
-    assert plans["counts"]["llm_authored"] == S.PLAN_SAMPLE_CAP + 10
-    assert len(plans["authored"]) == S.PLAN_SAMPLE_CAP, (
-        "the count reports every plan; only the carried sample is capped"
+
+    assert plans["counts"]["llm_authored"] == 50, "every plan is still counted"
+    assert "authored" not in plans, "no verbatim sample field survives"
+    assert "SECRET-PROSE" not in json.dumps(plans), (
+        "no rationale text reaches the snapshot by any route"
     )
 
 

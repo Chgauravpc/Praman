@@ -346,11 +346,91 @@ class Conversation:
 CALL = Conversation()
 
 
+#: The call the live endpoint places, as the envelope sees it. One definition,
+#: because two copies of a regulatory context are two things that can drift --
+#: and a preflight that ran against a different context than the call is worse
+#: than no preflight. 15:20 IST sits inside R9's 08:00-19:00 window on purpose:
+#: the demo should show an ALLOW with the rule named, not a refusal.
+CALL_AT = "2026-08-13T15:20:00+05:30"
+
+
+def _call_context(at: str = CALL_AT):
+    from pramaan.envelope import EnvelopeContext
+
+    return EnvelopeContext(
+        at=at,
+        legal_context="collection",
+        reason_code="insufficient_funds",
+        amount_paise=250_000,
+        consent="explicit",
+        ai_disclosure_scripted=True,
+        self_identification_scripted=True,
+    )
+
+
+def _live_call_open() -> Dict[str, Any]:
+    """The agent speaks first, because a recovery call is a call.
+
+    R10's requirement is not that the disclosure appears somewhere in the
+    transcript -- it is that it is the *first utterance*. Waiting for the human
+    to speak before the agent says anything inverts that, and also makes the
+    demo feel broken: you hold a button, say something into silence, and only
+    then discover a call was in progress.
+
+    So this is a separate endpoint from a turn. It runs the envelope preflight,
+    synthesises the two scripted opening lines through Sarvam, seeds the
+    transcript with them, and returns. Nothing is heard yet -- the human replies
+    to what the agent just said, which is the right way round.
+    """
+    from pramaan.config import load_config
+    from pramaan.converse import voice
+
+    config = load_config()
+    sarvam = voice.SarvamClient(config.sarvam_api_key)
+    if not sarvam.available:
+        raise RuntimeError(
+            "SARVAM_API_KEY is not set, so the agent has no voice. This endpoint "
+            "is the one part of the project that cannot be keyless."
+        )
+
+    identity = voice.CallerIdentity()
+    judgement = voice.preflight(_call_context())
+    if judgement.verdict == "REJECT":
+        raise RuntimeError(
+            "the envelope refused this call before it began: %s (%s)"
+            % (judgement.reason, judgement.rule_id)
+        )
+
+    lines = list(voice.opening_lines(identity))
+    # MP3 is a frame stream, so per-line clips concatenate into one playable
+    # file -- the same reason the demo clip uses it rather than WAV.
+    spoken = b"".join(sarvam.synthesize(line) for line in lines)
+
+    with CALL.lock:
+        CALL.turns = [{"speaker": "agent", "text": line} for line in lines]
+        CALL.promise = None
+        CALL.ruling = {
+            "verdict": judgement.verdict,
+            "rule_id": judgement.rule_id,
+            "reason": judgement.reason,
+        }
+        CALL.started = True
+        snapshot = list(CALL.turns)
+        ruling = CALL.ruling
+
+    return {
+        "opening": lines,
+        "turns": snapshot,
+        "ruling": ruling,
+        "audio_b64": base64.b64encode(spoken).decode("ascii") if spoken else None,
+        "promise": None,
+    }
+
+
 def _live_call_turn(audio_wav: bytes) -> Dict[str, Any]:
     """One human turn in, one agent turn out. Raises on a missing key."""
     from pramaan.config import load_config
     from pramaan.converse import promises, voice
-    from pramaan.envelope import EnvelopeContext
     from pramaan.llm.client import LLMClient
 
     config = load_config()
@@ -364,7 +444,7 @@ def _live_call_turn(audio_wav: bytes) -> Dict[str, Any]:
     identity = voice.CallerIdentity()
     # Event time, not wall clock -- the same discipline the ledger is under, so
     # a promise extracted here lands on a comparable timeline.
-    now = "2026-08-13T15:20:00+05:30"
+    now = CALL_AT
 
     with CALL.lock:
         first_turn = not CALL.started
@@ -374,16 +454,7 @@ def _live_call_turn(audio_wav: bytes) -> Dict[str, Any]:
     if first_turn:
         # The envelope decides whether this call may happen at all, before a
         # single word is exchanged -- exactly as `preflight` does in the CLI.
-        context = EnvelopeContext(
-            at=now,
-            legal_context="collection",
-            reason_code="insufficient_funds",
-            amount_paise=250_000,
-            consent="explicit",
-            ai_disclosure_scripted=True,
-            self_identification_scripted=True,
-        )
-        judgement = voice.preflight(context)
+        judgement = voice.preflight(_call_context(now))
         ruling_payload = {
             "verdict": judgement.verdict,
             "rule_id": judgement.rule_id,
@@ -405,6 +476,13 @@ def _live_call_turn(audio_wav: bytes) -> Dict[str, Any]:
     llm = LLMClient(config)
     turns = [voice.Turn(speaker=t["speaker"], text=t["text"], scripted=False)
              for t in transcript_snapshot]
+    if first_turn:
+        # Only reachable when a client posts a turn without opening the call.
+        # The opening lines are committed to the transcript below, but the model
+        # has to see them *now* or its first reply answers a call it does not
+        # know it made -- and the two paths would disagree about what was said.
+        turns = [voice.Turn(speaker="agent", text=line, scripted=True)
+                 for line in voice.opening_lines(identity)] + turns
     turns.append(voice.Turn(speaker="customer", text=heard, scripted=False))
     reply, call_ids = voice.generate_reply(llm, turns, heard, identity, now=now)
 
@@ -528,6 +606,15 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if self.path == "/api/call/reset":
             CALL.reset()
             self._json({"reset": True})
+            return
+
+        if self.path == "/api/call/start":
+            # No body: the agent speaks first, so there is nothing to hear yet.
+            CALL.reset()
+            try:
+                self._json(_live_call_open())
+            except Exception as error:  # noqa: BLE001 - reported, never a 500 page
+                self._json({"error": str(error)}, status=400)
             return
 
         if self.path == "/api/call/turn":

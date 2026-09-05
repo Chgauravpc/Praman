@@ -964,9 +964,15 @@ function initRunner() {
     })
     .catch(function () {
       /* No run server: stay a static report. Nothing is broken, so nothing is
-       * announced beyond a hint where the buttons would have been. */
+       * announced beyond a hint where the buttons would have been -- but the
+       * hint lives inside the run section, so that has to be revealed too, with
+       * the meter and log left hidden because there is nothing to meter. */
       var hint = document.getElementById('run-hint');
-      if (hint) hint.hidden = false;
+      if (!hint) return;
+      hint.hidden = false;
+      show('run-section');
+      var state = document.querySelector('#run-section .run-state');
+      if (state) state.hidden = true;
     });
 }
 
@@ -1153,46 +1159,6 @@ function renderPlans(plans) {
   renderBars('plans-actions-llm', plans.first_step_actions.llm, null);
   renderBars('plans-actions-fb', plans.first_step_actions.fallback, null);
 
-  var host = document.getElementById('plans-authored');
-  host.textContent = '';
-  plans.authored.forEach(function (plan) {
-    var card = el('div', 'plan');
-
-    var head = el('div', 'plan-head');
-    head.appendChild(el('span', 'why-kind', plan.action || '—'));
-    if (plan.channel && plan.channel !== 'none') {
-      head.appendChild(el('span', 'plan-channel', 'via ' + plan.channel));
-    }
-    head.appendChild(el('span', 'why-ref', 'seq ' + plan.seq));
-    card.appendChild(head);
-
-    if (plan.rationale) card.appendChild(el('p', 'plan-why', plan.rationale));
-    /* The step's own rationale is a different sentence from the plan's, and on
-     * a real reply it is the more specific of the two. */
-    if (plan.step_rationale && plan.step_rationale !== plan.rationale) {
-      card.appendChild(el('p', 'plan-why step', plan.step_rationale));
-    }
-
-    var meta = el('div', 'plan-meta');
-    [
-      ['delay', plan.delay_seconds === 0 ? 'immediate' : duration(plan.delay_seconds)],
-      ['cost', rupees(plan.cost_paise || 0)],
-      ['expected value', rupees(plan.expected_value_paise || 0)],
-      ['stops on', (plan.stop_conditions || []).join(' · ') || '—'],
-    ].forEach(function (pair) {
-      var item = el('span', 'plan-fact');
-      item.appendChild(el('span', 'plan-fact-k', pair[0]));
-      item.appendChild(el('span', 'plan-fact-v', pair[1]));
-      meta.appendChild(item);
-    });
-    card.appendChild(meta);
-
-    /* The memoisation key. Shown because it is the honest answer to "which
-     * customer is this for?" -- it is for a signature, not a customer. */
-    card.appendChild(el('div', 'plan-sig', plan.signature || ''));
-    host.appendChild(card);
-  });
-
   return true;
 }
 
@@ -1372,6 +1338,7 @@ function renderVoice(voice) {
 var mediaStream = null;
 var audioCtx = null;
 var recorderNode = null;
+var silence = null;
 var recordedChunks = [];
 var recording = false;
 
@@ -1411,30 +1378,100 @@ function callStatus(text) {
   document.getElementById('call-status').textContent = text;
 }
 
-function startRecording() {
-  if (recording) return;
-  recording = true;
-  recordedChunks = [];
-  document.getElementById('call-talk').classList.add('recording');
-  callStatus('listening…');
-
-  navigator.mediaDevices.getUserMedia({ audio: true })
+/*
+ * The microphone is acquired once, when the call starts, and held for the
+ * whole call. The obvious shape -- ask for it inside mousedown -- has a race
+ * you only hit on camera: getUserMedia resolves asynchronously, so a short
+ * press releases the button before the stream exists, `stopRecording` runs
+ * against zero chunks, and the turn is silently lost. Arming up front also
+ * means the browser's permission prompt appears once, at a moment the operator
+ * expects it, instead of interrupting the first thing they try to say.
+ */
+function armMicrophone() {
+  if (audioCtx) return Promise.resolve();
+  return navigator.mediaDevices.getUserMedia({ audio: true })
     .then(function (stream) {
       mediaStream = stream;
       audioCtx = new (window.AudioContext || window.webkitAudioContext)();
       var source = audioCtx.createMediaStreamSource(stream);
       recorderNode = audioCtx.createScriptProcessor(4096, 1, 1);
       recorderNode.onaudioprocess = function (e) {
+        /* Fires for the whole call; only a held button makes it keep anything. */
         if (recording) recordedChunks.push(new Float32Array(e.inputBuffer.getChannelData(0)));
       };
+      /* A ScriptProcessor only gets pulled if it reaches the destination, but
+       * routing a live microphone to the speakers for the length of a call is
+       * a feedback loop on a laptop. So it terminates in a muted gain node:
+       * the graph still runs, nothing is ever heard. */
+      silence = audioCtx.createGain();
+      silence.gain.value = 0;
       source.connect(recorderNode);
-      recorderNode.connect(audioCtx.destination);
+      recorderNode.connect(silence);
+      silence.connect(audioCtx.destination);
+    });
+}
+
+function releaseMicrophone() {
+  recording = false;
+  recordedChunks = [];
+  if (recorderNode) { recorderNode.disconnect(); recorderNode = null; }
+  if (silence) { silence.disconnect(); silence = null; }
+  if (mediaStream) { mediaStream.getTracks().forEach(function (t) { t.stop(); }); mediaStream = null; }
+  if (audioCtx) { audioCtx.close(); audioCtx = null; }
+}
+
+function playReply(data) {
+  if (!data.audio_b64) return;
+  var audio = document.getElementById('call-audio');
+  audio.src = 'data:audio/mpeg;base64,' + data.audio_b64;
+  audio.hidden = false;
+  audio.play().catch(function () { /* autoplay may need a gesture */ });
+}
+
+/* -- the agent opens ---------------------------------------------------- */
+/*
+ * A separate endpoint from a turn, because the agent's first utterance answers
+ * nothing -- it is the R10 disclosure, and R10's requirement is that it comes
+ * first, not that it appears somewhere. Waiting for the human to speak into
+ * silence inverts that and makes the demo feel broken besides.
+ */
+function startCall() {
+  var startBtn = document.getElementById('call-start');
+  var talk = document.getElementById('call-talk');
+  startBtn.disabled = true;
+  talk.disabled = true;
+  callStatus('asking for the microphone, then dialling…');
+
+  armMicrophone()
+    .then(function () {
+      callStatus('the agent is introducing itself (Sarvam TTS)…');
+      return fetch('/api/call/start', { method: 'POST' }).then(function (r) { return r.json(); });
+    })
+    .then(function (data) {
+      if (data.error) {
+        callStatus('could not start: ' + data.error);
+        startBtn.disabled = false;
+        return;
+      }
+      renderCallTurns(data);
+      playReply(data);
+      talk.disabled = false;
+      talk.classList.add('primary');
+      callStatus('the agent has spoken — hold the button and reply');
     })
     .catch(function (e) {
-      recording = false;
-      document.getElementById('call-talk').classList.remove('recording');
-      callStatus('microphone refused: ' + e.message);
+      callStatus('could not start: ' + e.message);
+      startBtn.disabled = false;
     });
+}
+
+function startRecording() {
+  if (recording) return;
+  if (!audioCtx) { callStatus('press Start call first'); return; }
+  recordedChunks = [];
+  recording = true;
+  document.getElementById('call-talk').classList.add('recording');
+  callStatus('listening…');
 }
 
 function stopRecording() {
@@ -1443,11 +1480,7 @@ function stopRecording() {
   document.getElementById('call-talk').classList.remove('recording');
 
   var rate = audioCtx ? audioCtx.sampleRate : 44100;
-  if (recorderNode) { recorderNode.disconnect(); recorderNode = null; }
-  if (mediaStream) { mediaStream.getTracks().forEach(function (t) { t.stop(); }); mediaStream = null; }
-  if (audioCtx) { audioCtx.close(); audioCtx = null; }
-
-  if (!recordedChunks.length) { callStatus('nothing recorded'); return; }
+  if (!recordedChunks.length) { callStatus('nothing recorded — hold it a moment longer'); return; }
   var blob = wavBlob(recordedChunks, rate);
   recordedChunks = [];
   callStatus('transcribing with Sarvam, then asking the model…');
@@ -1461,12 +1494,7 @@ function stopRecording() {
     .then(function (data) {
       if (data.error) { callStatus('failed: ' + data.error); return; }
       renderCallTurns(data);
-      if (data.audio_b64) {
-        var audio = document.getElementById('call-audio');
-        audio.src = 'data:audio/mpeg;base64,' + data.audio_b64;
-        audio.hidden = false;
-        audio.play().catch(function () { /* autoplay may need a gesture */ });
-      }
+      playReply(data);
       callStatus(data.from_llm
         ? 'replied via the turn-policy LLM' +
           (data.llm_call_ids.length ? ' (' + data.llm_call_ids[0].slice(0, 12) + ')' : '')
@@ -1522,14 +1550,20 @@ function initLiveCall() {
   talk.addEventListener('touchstart', function (e) { e.preventDefault(); startRecording(); });
   talk.addEventListener('touchend', function (e) { e.preventDefault(); stopRecording(); });
 
+  document.getElementById('call-start').addEventListener('click', startCall);
+
   document.getElementById('call-reset').addEventListener('click', function () {
+    releaseMicrophone();
+    talk.disabled = true;
+    talk.classList.remove('primary', 'recording');
+    document.getElementById('call-start').disabled = false;
     fetch('/api/call/reset', { method: 'POST' })
       .then(function () {
         document.getElementById('call-turns').textContent = '';
         document.getElementById('call-ruling').hidden = true;
         document.getElementById('call-promise').hidden = true;
         document.getElementById('call-audio').hidden = true;
-        callStatus('new call — hold the button and speak');
+        callStatus('call ended — press Start call to dial again');
       });
   });
 

@@ -41,6 +41,14 @@
 
     <div id="run-buttons" class="run-buttons"></div>
 
+    <p class="section-note" id="run-hint" hidden>This page is being served by a
+      plain static server, which has no <code>/api/runs</code> behind it &mdash;
+      so there are no buttons here and nothing on this page can execute.
+      Everything below is the last committed run and is complete on its own. For
+      the live version, serve it with
+      <code>python -m pramaan.report.server</code> and open
+      <code>http://127.0.0.1:8000/dashboard/</code>.</p>
+
     <div class="run-state">
       <div class="run-meter"><div id="run-bar" class="run-bar"></div></div>
       <div class="run-meta">
@@ -223,12 +231,6 @@
         <div id="plans-actions-fb" class="bars compact"></div>
       </div>
     </div>
-
-    <h3>Every plan the model actually wrote</h3>
-    <p class="section-note">All of them, verbatim, with the memoisation key each
-      one answers. Nothing here is summarised &mdash; this is the model's own
-      output as the ledger stored it.</p>
-    <div id="plans-authored"></div>
   </section>
 
   <section id="voice-section" hidden>
@@ -261,8 +263,11 @@
     <h2>Talk to it</h2>
     <p class="section-note">The clip above is a <em>scripted</em> dialogue &mdash;
       both sides are fixed text, rendered by Sarvam TTS, so the artifact is
-      byte-reproducible with no key. <strong>This is not that.</strong> Hold the
-      button, speak Hinglish, and one turn runs:
+      byte-reproducible with no key. <strong>This is not that.</strong> Press
+      <strong>Start call</strong> and the agent speaks first &mdash; it names
+      itself and discloses that it is an AI, because R10 requires that to be the
+      <em>first</em> utterance, not merely somewhere in the transcript. Then hold
+      the button, speak Hinglish, and one turn runs:
       <code>your voice → Sarvam STT → the turn-policy LLM → Sarvam TTS → a reply
       you hear</code>. The agent's words are generated against the transcript so
       far, not chosen from a list. This is the one path that <strong>cannot</strong>
@@ -271,9 +276,10 @@
       spends money per turn.</p>
 
     <div class="call-controls">
-      <button id="call-talk" type="button" class="btn primary talk">Hold to speak</button>
-      <button id="call-reset" type="button" class="btn">New call</button>
-      <span id="call-status" class="rows-status">idle</span>
+      <button id="call-start" type="button" class="btn primary">Start call</button>
+      <button id="call-talk" type="button" class="btn talk" disabled>Hold to speak</button>
+      <button id="call-reset" type="button" class="btn">Hang up</button>
+      <span id="call-status" class="rows-status">idle &mdash; press <em>Start call</em></span>
     </div>
 
     <div class="call-ruling" id="call-ruling" hidden></div>

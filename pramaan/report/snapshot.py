@@ -851,12 +851,6 @@ def read_voice(db_path: Path, audio: Path, transcript: Path) -> Optional[Dict[st
     }
 
 
-#: How many LLM-authored plans to carry in full. All 33 on the committed batch
-#: fit comfortably; the cap exists so a future run with a warmer cache cannot
-#: quietly turn the snapshot into a megabyte.
-PLAN_SAMPLE_CAP = 40
-
-
 def read_plans(jsonl_path: Path) -> Optional[Dict[str, Any]]:
     """The planner's own output: what it proposed, and who actually authored it.
 
@@ -883,7 +877,6 @@ def read_plans(jsonl_path: Path) -> Optional[Dict[str, Any]]:
 
     counts = {"no_call": 0, "unreadable": 0, "llm_authored": 0}
     actions: Dict[str, Dict[str, int]] = {"llm": {}, "fallback": {}}
-    authored: List[Dict[str, Any]] = []
     total = 0
 
     for line in jsonl_path.read_text(encoding="utf-8").splitlines():
@@ -910,21 +903,6 @@ def read_plans(jsonl_path: Path) -> Optional[Dict[str, Any]]:
             _bump(actions["llm" if bucket == "llm_authored" else "fallback"],
                   steps[0].get("action"))
 
-        if bucket == "llm_authored" and len(authored) < PLAN_SAMPLE_CAP:
-            step = steps[0] if steps else {}
-            authored.append({
-                "seq": int(row["seq"]),
-                "signature": payload.get("signature"),
-                "rationale": payload.get("rationale"),
-                "action": step.get("action"),
-                "channel": step.get("channel"),
-                "delay_seconds": step.get("delay_seconds"),
-                "cost_paise": step.get("cost_paise"),
-                "expected_value_paise": step.get("expected_value_paise"),
-                "stop_conditions": step.get("stop_conditions") or [],
-                "step_rationale": step.get("rationale"),
-            })
-
     if not total:
         return None
 
@@ -940,7 +918,6 @@ def read_plans(jsonl_path: Path) -> Optional[Dict[str, Any]]:
             counts["llm_authored"] / called_total if called_total else None
         ),
         "first_step_actions": actions,
-        "authored": authored,
         "source": jsonl_path.name,
     }
 
