@@ -1724,3 +1724,43 @@ Mechanism: Added tests/conftest.py: a session-scoped autouse fixture doing
            The lesson: if a guarantee depends on remembering a prefix, it is not
            a guarantee. Make the safe path the default path.
 ```
+
+### [2026-09-05] Not a failure, but a promise kept
+
+**The demo GIF was regenerated, which the README had been promising for six
+days.** It shipped on Day 7 rendered from a real `make execute-full` on the
+*payment-only* batch (+17.49pp, Rs 7,44,967), and when the batch grew to five
+event types the numbers moved to +10.43pp / Rs 88,747 while the GIF did not.
+That was handled honestly at the time -- a warning next to the image saying it
+records the older figures -- but a warning is a smaller thing than a correct
+artifact, and the demo script had to carry a "do not show this" checklist item
+as a result.
+
+Regenerated the same way it was made: run the real command offline and keyless,
+capture its stdout, draw those exact bytes as terminal frames with Pillow. The
+generator stays out of the repo so the SQLite-plus-stdlib runtime claim holds.
+Geometry and palette were measured off the GIF being replaced -- 932x786, 35px
+title bar, 24px line height, the same seven colours -- so this is the same
+artifact with current numbers rather than a different-looking thing.
+
+Three things went wrong on the way and are worth recording. Section headings
+came out grey, because a palette quantised from frame 0 contains no cyan: frame
+0 is a bare prompt line. Whole prose paragraphs came out cyan, because
+"unindented" is a bad proxy for "heading" when the report also prints
+unindented paragraphs -- a heading is short *and* either shouted or in the
+report's "NAME -- subtitle" form. And the first render put the only readable
+moment on the last frame, which is not where the two numbers worth reading are;
+it now holds two seconds on the headline as well.
+
+Verified against the artifacts rather than eyeballed: the captured run prints
+C-A +10.43 pp [+7.63, +13.33], C-B +9.12 pp [+6.32, +12.07], 303 distinct
+signatures, 33 built from an LLM reply, verify_chain PASS, ALL CHECKS PASS --
+every one matching what `build/dashboard.json` and the README already claim.
+
+One aside from the same session, because it looked alarming and was not: four
+new entries appeared in `fixtures/llm_cache/` during an offline run, which
+should be impossible. They were "You are Asha, an automated voice agent" and
+promise-extraction prompts -- the *human* was talking to the live voice agent in
+the browser at the time. Two turns, two prompts each. The offline guarantee was
+never breached; the directory simply had a second writer again, which is the
+same trap as the orphaned-pytest entry above.

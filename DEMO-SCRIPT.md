@@ -23,7 +23,7 @@ Open `http://127.0.0.1:8000/dashboard/` and hard-reload (Ctrl+Shift+R).
 - [ ] Microphone works, and this origin has **already** been granted mic permission. Do that prompt before recording, not during.
 - [ ] `SARVAM_API_KEY` and an LLM key are in `.env`, and you have network.
 - [ ] Second tab open on `architecture.html`, ready but not focused.
-- [ ] Do **not** show `assets/demo.gif`. It records the older payment-only batch (+17.49pp) and contradicts the numbers you will be saying.
+- [ ] `assets/demo.gif` now matches this batch (+10.43pp, ₹88,747.32) and is safe to show — it is a 7.8s loop that holds on the headline. Optional B-roll for segment 1 if you would rather open on it than on the page.
 
 ---
 

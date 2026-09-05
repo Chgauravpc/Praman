@@ -33,15 +33,15 @@ git clone <this repo> && cd pramaan && make demo   # ~40s, NO API KEY, reproduce
 make execute-full                                  # ~2.5m, NO API KEY, reproduces the headline number
 ```
 
-![make execute-full on the earlier payment-only batch: C-A +17.49pp, C-B +16.91pp (both excluding zero), Rs 7,44,967.63 incremental, ALL CHECKS PASS](assets/demo.gif)
+![make execute-full on the five-type batch: C-A +10.43pp [+7.63, +13.33], C-B +9.12pp [+6.32, +12.07] (both excluding zero), Rs 88,747.32 incremental, 303 distinct signatures, 33 built from an LLM reply, verify_chain PASS, ALL CHECKS PASS](assets/demo.gif)
 
 *The GIF is a faithful render of real `make execute-full` output (deterministic
-bytes → deterministic frames), not a screen capture and not staged.* **⚠ It
-records the earlier payment-only batch and therefore shows the older figures
-(+17.49pp, ₹7,44,967), not the five-type numbers above.** *It is kept, clearly
-labelled, rather than quietly deleted or captioned as though it matched — but it
-needs re-recording before submission. Both commands run offline from the
-committed cache.*
+bytes → deterministic frames), not a screen capture and not staged — the frames
+are the program's own stdout drawn as a terminal, so nothing in it is typed by
+hand or edited.* It records the **five-type batch at seed 42**, the same run
+every number on this page comes from, and it holds on the headline for two
+seconds before the `ALL CHECKS PASS` at the end. Both commands run offline from
+the committed cache.
 
 🔊 **[Hinglish recovery call — 29s MP3](assets/voice-demo.mp3)** · **[transcript, for review on mute](assets/voice-transcript.md)** — a two-voice Sarvam **TTS** rendering of a scripted Hinglish recovery call. It opens with the **AI disclosure (R10)**, and the agent's turn policy, envelope gating, and promise extraction are all real: the customer's line *"Friday tak pakka kar dunga"* becomes a structured promise on the hash-chained ledger. **Honest scope:** the customer lines here are a scripted transcript, *not* transcribed audio — the Sarvam **STT** leg is implemented and verified to transcribe the Hinglish audio, but the shipped clip does not run it ([why](LIMITATIONS.md#the-voice-clip-is-real-tts-of-a-scripted-call-the-stt-leg-is-not-exercised-in-it)). `make voice` reproduces the transcript keyless; `make voice-live` synthesises the audio.
 
