@@ -274,6 +274,10 @@ const GRAPH = {
       detail: "orders · payment_links · subscriptions. Test mode is enforced at client construction, not merely assumed — a live key that isn't rzp_test_ is refused.",
       meta: "called by: Execute" },
 
+    { id: "livecall", label: "Live call (browser)", layer: 1, type: "stage", col: 7, row: 0,
+      detail: "The dashboard's “Talk to it” panel. A person holds a button, speaks Hinglish, and the same Converse turn policy answers: Sarvam STT → the turn-policy LLM → Sarvam TTS. It enters the loop sideways — no Sense, no arm assignment, and no ledger row, because it is one conversation rather than a measured event. The envelope still gates it before the first word, and the R10 disclosure is its own endpoint so that it is provably the first utterance rather than merely present. The only path here that cannot run keyless or replay from cache: a conversation that has not happened yet cannot have been recorded.",
+      meta: "module: report/server (_live_call_open, _live_call_turn)\nendpoints: POST /api/call/start · /api/call/turn\nneeds: SARVAM_API_KEY + an LLM key, and spends per turn" },
+
     { id: "converse", label: "Converse (LLM + voice)", layer: 1, type: "stage", col: 7, row: 1,
       detail: "Stage 07, LLM + voice. Only for actions that contact the customer. The AI discloses it's automated first (R10), then the turn policy runs; the customer's own words become a tracked promise on the ledger.",
       meta: "module: converse/voice · promises\nledger rows: CONVERSE, PROMISE" },
@@ -318,6 +322,7 @@ const GRAPH = {
     { from: "execute",    to: "razorpay",  relationship: "calls", layer_crossing: true },
     { from: "execute",    to: "converse",  relationship: "contact action" },
     { from: "converse",   to: "llm",       relationship: "turn policy", layer_crossing: true },
+    { from: "livecall",   to: "converse",  relationship: "one human turn" },
     { from: "converse",   to: "sarvam",    relationship: "TTS / STT", layer_crossing: true },
     { from: "armA",       to: "resolve",   relationship: "no action" },
     { from: "converse",   to: "resolve",   relationship: "outcome" },
