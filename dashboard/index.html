@@ -195,6 +195,42 @@
     </div>
   </section>
 
+  <section id="plans-section" hidden>
+    <h2>What the planner proposed</h2>
+    <p class="section-note">One plan per distinct <em>signature</em>, not per event
+      &mdash; a plan is memoised across every event sharing the same seven
+      features, which is why 6,000 events produce a few hundred plans.
+      <strong>"An LLM was called" and "the LLM wrote this plan" are different
+      things</strong>, and the split below keeps them apart: a plan carries
+      <code>llm_call_ids</code> whether the reply was usable or not, so counting
+      those ids overstates the model's contribution here by 2.6&times;.</p>
+
+    <dl class="rows-summary" id="plans-summary"></dl>
+
+    <div class="split">
+      <div>
+        <h3>Who authored the first step</h3>
+        <div id="plans-authorship" class="bars"></div>
+        <p class="section-note" id="plans-rate"></p>
+      </div>
+      <div>
+        <h3>First action — model vs table</h3>
+        <p class="section-note">The same envelope judges both, so a difference
+          here is a difference in what was <em>proposed</em>.</p>
+        <div class="bar-group-label" id="plans-label-llm"></div>
+        <div id="plans-actions-llm" class="bars compact"></div>
+        <div class="bar-group-label" id="plans-label-fb"></div>
+        <div id="plans-actions-fb" class="bars compact"></div>
+      </div>
+    </div>
+
+    <h3>Every plan the model actually wrote</h3>
+    <p class="section-note">All of them, verbatim, with the memoisation key each
+      one answers. Nothing here is summarised &mdash; this is the model's own
+      output as the ledger stored it.</p>
+    <div id="plans-authored"></div>
+  </section>
+
   <section id="voice-section" hidden>
     <h2>The recovery call</h2>
     <p class="section-note">A Hinglish collection call, gated by the same policy

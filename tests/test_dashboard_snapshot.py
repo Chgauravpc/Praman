@@ -638,6 +638,99 @@ def test_the_detected_view_carries_no_latent_truth(snap_with_csv):
             assert banned not in column, column
 
 
+# --------------------------------------------------------------------------
+# The planner view -- "called" is not "authored"
+# --------------------------------------------------------------------------
+
+
+def _plan_line(seq: int, *, call_ids, rationale, action="ACT_RETRY") -> str:
+    """One PLAN row in the shape ``Ledger.export_jsonl`` writes."""
+    payload = {
+        "signature": "reason_class=FUNDS|amount_band=2",
+        "rationale": rationale,
+        "llm_call_ids": call_ids,
+        "expected_value_paise": 0,
+        "steps": [{
+            "step_index": 0, "action": action, "channel": "none",
+            "delay_seconds": 0, "cost_paise": 0, "expected_value_paise": 0,
+            "rationale": "step reason", "stop_conditions": ["paid"],
+        }],
+    }
+    return json.dumps({
+        "seq": seq, "ts": "2026-08-03T10:00:00+05:30", "kind": "PLAN",
+        "arm": None, "payload": json.dumps(payload), "llm_call_ids": "[]",
+        "rule_fired": None, "decision": None, "cost_paise": 0,
+        "prev_hash": "x" * 64, "row_hash": "y" * 64,
+    })
+
+
+def test_a_called_but_unusable_reply_is_not_counted_as_authored(tmp_path: Path):
+    """The distinction the whole panel exists to make.
+
+    A plan carries ``llm_call_ids`` whether the reply was usable or not, so
+    counting those ids conflates "the model was asked" with "the model wrote
+    this". On the committed batch that is 85 against 33 -- a 2.6x overstatement
+    of the model's contribution. The discriminator is the rationale: the
+    fallback writes a fixed NFR-2 string and a real reply does not.
+    """
+    path = tmp_path / "plans.jsonl"
+    path.write_text("\n".join([
+        _plan_line(1, call_ids=[], rationale="NFR-2 deterministic fallback -- see step"),
+        _plan_line(2, call_ids=["c1"], rationale="NFR-2 deterministic fallback -- see step"),
+        _plan_line(3, call_ids=["c2"], rationale="Instrument dead; notify the customer."),
+    ]) + "\n", encoding="utf-8")
+
+    plans = S.read_plans(path)
+    assert plans["signatures"] == 3
+    assert plans["counts"] == {"no_call": 1, "unreadable": 1, "llm_authored": 1}
+    assert plans["called"] == 2, "called counts both id-bearing plans"
+    assert plans["usable_reply_rate"] == 0.5
+    assert len(plans["authored"]) == 1
+    assert plans["authored"][0]["rationale"].startswith("Instrument dead")
+
+
+def test_the_three_buckets_account_for_every_plan(tmp_path: Path):
+    path = tmp_path / "plans.jsonl"
+    path.write_text("\n".join([
+        _plan_line(1, call_ids=[], rationale="NFR-2 fallback"),
+        _plan_line(2, call_ids=["a"], rationale="NFR-2 fallback"),
+        _plan_line(3, call_ids=["b"], rationale="a real reason"),
+        _plan_line(4, call_ids=["c"], rationale="another real reason"),
+    ]) + "\n", encoding="utf-8")
+    plans = S.read_plans(path)
+    assert sum(plans["counts"].values()) == plans["signatures"]
+
+
+def test_first_step_actions_are_split_by_author(tmp_path: Path):
+    """Model and table proposals are counted separately, never pooled."""
+    path = tmp_path / "plans.jsonl"
+    path.write_text("\n".join([
+        _plan_line(1, call_ids=[], rationale="NFR-2 fallback", action="ACT_WAIT"),
+        _plan_line(2, call_ids=["a"], rationale="real", action="ACT_RETRY"),
+    ]) + "\n", encoding="utf-8")
+    plans = S.read_plans(path)
+    assert plans["first_step_actions"]["llm"] == {"ACT_RETRY": 1}
+    assert plans["first_step_actions"]["fallback"] == {"ACT_WAIT": 1}
+
+
+def test_a_missing_plan_export_is_absent_not_an_error(tmp_path: Path):
+    """No execute run yet means no planner section, not a broken page."""
+    assert S.read_plans(tmp_path / "never-written.jsonl") is None
+
+
+def test_the_authored_sample_is_capped(tmp_path: Path):
+    """So a warmer cache cannot quietly turn the snapshot into a megabyte."""
+    path = tmp_path / "plans.jsonl"
+    lines = [_plan_line(i, call_ids=["c%d" % i], rationale="real reason %d" % i)
+             for i in range(S.PLAN_SAMPLE_CAP + 10)]
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    plans = S.read_plans(path)
+    assert plans["counts"]["llm_authored"] == S.PLAN_SAMPLE_CAP + 10
+    assert len(plans["authored"]) == S.PLAN_SAMPLE_CAP, (
+        "the count reports every plan; only the carried sample is capped"
+    )
+
+
 def test_non_finite_values_become_null_rather_than_crashing():
     """``canonical_json`` sets ``allow_nan=False``, and this system produces
     infinities: ``gross_over_claim`` returns one on an underpowered batch whose

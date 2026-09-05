@@ -1100,6 +1100,102 @@ function renderReplayCounters() {
   });
 }
 
+/* -- the planner ------------------------------------------------------- */
+
+function renderPlans(plans) {
+  if (!plans) return false;
+  var c = plans.counts;
+
+  var summary = document.getElementById('plans-summary');
+  summary.textContent = '';
+  [
+    ['distinct signatures', count(plans.signatures)],
+    ['model was called', count(plans.called)],
+    ['plans the model wrote', count(c.llm_authored)],
+    ['replies unusable', count(c.unreadable)],
+    ['no cached reply', count(c.no_call)],
+  ].forEach(function (pair) {
+    var wrap = el('div', 'pair');
+    wrap.appendChild(el('dt', null, pair[0]));
+    wrap.appendChild(el('dd', null, pair[1]));
+    summary.appendChild(wrap);
+  });
+
+  /* Three buckets, in pipeline order: never asked, asked and unusable, asked
+   * and used. Two would hide the middle one, which is the interesting number. */
+  renderBars('plans-authorship', {
+    'no cached reply': c.no_call,
+    'reply unusable': c.unreadable,
+    'model authored': c.llm_authored,
+  }, function (name) {
+    if (name === 'model authored') return 'allow';
+    if (name === 'reply unusable') return 'amend';
+    return null;
+  });
+
+  var rate = document.getElementById('plans-rate');
+  rate.textContent = plans.usable_reply_rate === null
+    ? 'The model was never called on this batch.'
+    : 'Of the ' + count(plans.called) + ' signatures where the model was asked, ' +
+      percent(plans.usable_reply_rate) + ' produced a plan the schema accepted. ' +
+      'The rest fell back to the deterministic reason-class table — the same one ' +
+      'arm B uses, so a cache miss cannot become a third, untested policy. A ' +
+      'planner that degrades silently looks identical to one that never degrades, ' +
+      'which is why this is counted rather than assumed.';
+
+  /* Both groups are the same actions with different counts, so unlabelled they
+   * read as one list with duplicate rows -- ACT_RETRY 18 above ACT_RETRY 73 and
+   * nothing to say which is which. */
+  document.getElementById('plans-label-llm').textContent =
+    'model authored — ' + count(c.llm_authored) + ' signatures';
+  document.getElementById('plans-label-fb').textContent =
+    'deterministic table — ' + count(c.no_call + c.unreadable) + ' signatures';
+  renderBars('plans-actions-llm', plans.first_step_actions.llm, null);
+  renderBars('plans-actions-fb', plans.first_step_actions.fallback, null);
+
+  var host = document.getElementById('plans-authored');
+  host.textContent = '';
+  plans.authored.forEach(function (plan) {
+    var card = el('div', 'plan');
+
+    var head = el('div', 'plan-head');
+    head.appendChild(el('span', 'why-kind', plan.action || '—'));
+    if (plan.channel && plan.channel !== 'none') {
+      head.appendChild(el('span', 'plan-channel', 'via ' + plan.channel));
+    }
+    head.appendChild(el('span', 'why-ref', 'seq ' + plan.seq));
+    card.appendChild(head);
+
+    if (plan.rationale) card.appendChild(el('p', 'plan-why', plan.rationale));
+    /* The step's own rationale is a different sentence from the plan's, and on
+     * a real reply it is the more specific of the two. */
+    if (plan.step_rationale && plan.step_rationale !== plan.rationale) {
+      card.appendChild(el('p', 'plan-why step', plan.step_rationale));
+    }
+
+    var meta = el('div', 'plan-meta');
+    [
+      ['delay', plan.delay_seconds === 0 ? 'immediate' : duration(plan.delay_seconds)],
+      ['cost', rupees(plan.cost_paise || 0)],
+      ['expected value', rupees(plan.expected_value_paise || 0)],
+      ['stops on', (plan.stop_conditions || []).join(' · ') || '—'],
+    ].forEach(function (pair) {
+      var item = el('span', 'plan-fact');
+      item.appendChild(el('span', 'plan-fact-k', pair[0]));
+      item.appendChild(el('span', 'plan-fact-v', pair[1]));
+      meta.appendChild(item);
+    });
+    card.appendChild(meta);
+
+    /* The memoisation key. Shown because it is the honest answer to "which
+     * customer is this for?" -- it is for a signature, not a customer. */
+    card.appendChild(el('div', 'plan-sig', plan.signature || ''));
+    host.appendChild(card);
+  });
+
+  return true;
+}
+
 /* -- the voice call ---------------------------------------------------- */
 
 function renderVoice(voice) {
@@ -1423,6 +1519,8 @@ function render(data) {
 
     initRows(data.provenance);
 
+    if (renderPlans(data.plans)) show('plans-section');
+
     if (renderVoice(data.voice)) show('voice-section');
 
     renderWhy(data.why);
@@ -1435,7 +1533,24 @@ fetch(SOURCE, { cache: 'no-store' })
     return response.json();
   })
   .then(function (data) {
-    render(data);
+    /* Render failures get their own report.
+     *
+     * Without this they fell into the fetch chain's catch and were announced as
+     * "Could not load ../build/dashboard.json" -- which sends the reader to
+     * check the server and the file path when the file loaded perfectly and the
+     * bug is in this script. An error message that points at the wrong
+     * subsystem is worse than a stack trace. */
+    try {
+      render(data);
+    } catch (error) {
+      fail('The snapshot loaded, but rendering it failed',
+        'This is a bug in dashboard/app.js, not a missing or stale file — ' +
+        SOURCE + ' fetched and parsed fine. ' + (error && error.message || error),
+        (error && error.stack)
+          ? String(error.stack).split(/\r?\n/).slice(0, 4).join('\n')
+          : '');
+      return;
+    }
     /* Ask the server whether it can run anything. If it cannot -- because the
      * page is being served by a plain `http.server` -- the run and replay
      * sections stay hidden and this remains the static report it was. */

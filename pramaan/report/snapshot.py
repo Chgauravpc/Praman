@@ -841,6 +841,100 @@ def read_voice(db_path: Path, audio: Path, transcript: Path) -> Optional[Dict[st
     }
 
 
+#: How many LLM-authored plans to carry in full. All 33 on the committed batch
+#: fit comfortably; the cap exists so a future run with a warmer cache cannot
+#: quietly turn the snapshot into a megabyte.
+PLAN_SAMPLE_CAP = 40
+
+
+def read_plans(jsonl_path: Path) -> Optional[Dict[str, Any]]:
+    """The planner's own output: what it proposed, and who actually authored it.
+
+    Read from the execute run's exported chain rather than the demo ledger,
+    because ``PLAN`` is the one kind only ``run_shadow`` writes.
+
+    **The three-way split is the point.** "LLM-authored" is not the same as "an
+    LLM was called", and conflating them overstates the model's contribution by
+    two and a half times on this batch:
+
+      - no call at all -- no cached reply for the signature, so the deterministic
+        reason-class table answered;
+      - called, reply unreadable -- the model was asked and produced something
+        the plan schema rejected, so the same table answered;
+      - called, plan used -- the model's own words, in the ledger.
+
+    A plan carries ``llm_call_ids`` in both of the last two cases, so counting
+    those ids gives 85 where the honest figure is 33. The discriminator is the
+    rationale: the fallback writes a fixed NFR-2 string, and a real reply does
+    not.
+    """
+    if not jsonl_path.exists():
+        return None
+
+    counts = {"no_call": 0, "unreadable": 0, "llm_authored": 0}
+    actions: Dict[str, Dict[str, int]] = {"llm": {}, "fallback": {}}
+    authored: List[Dict[str, Any]] = []
+    total = 0
+
+    for line in jsonl_path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        row = json.loads(line)
+        if row.get("kind") != "PLAN":
+            continue
+        payload = json.loads(row["payload"])
+        total += 1
+
+        called = bool(payload.get("llm_call_ids"))
+        fell_back = "NFR-2" in (payload.get("rationale") or "")
+        if not called:
+            bucket = "no_call"
+        elif fell_back:
+            bucket = "unreadable"
+        else:
+            bucket = "llm_authored"
+        counts[bucket] += 1
+
+        steps = payload.get("steps") or []
+        if steps:
+            _bump(actions["llm" if bucket == "llm_authored" else "fallback"],
+                  steps[0].get("action"))
+
+        if bucket == "llm_authored" and len(authored) < PLAN_SAMPLE_CAP:
+            step = steps[0] if steps else {}
+            authored.append({
+                "seq": int(row["seq"]),
+                "signature": payload.get("signature"),
+                "rationale": payload.get("rationale"),
+                "action": step.get("action"),
+                "channel": step.get("channel"),
+                "delay_seconds": step.get("delay_seconds"),
+                "cost_paise": step.get("cost_paise"),
+                "expected_value_paise": step.get("expected_value_paise"),
+                "stop_conditions": step.get("stop_conditions") or [],
+                "step_rationale": step.get("rationale"),
+            })
+
+    if not total:
+        return None
+
+    called_total = counts["unreadable"] + counts["llm_authored"]
+    return {
+        "signatures": total,
+        "counts": counts,
+        "called": called_total,
+        # Of the times the model was actually asked, how often was the answer
+        # usable. Reported because a planner that degrades silently looks
+        # identical to one that never degrades.
+        "usable_reply_rate": (
+            counts["llm_authored"] / called_total if called_total else None
+        ),
+        "first_step_actions": actions,
+        "authored": authored,
+        "source": jsonl_path.name,
+    }
+
+
 def _panel(row: Dict[str, Any], caption: str, fields: Dict[str, Any]) -> Dict[str, Any]:
     """One why-panel: the row's identity, a caption, and named fields.
 
@@ -957,6 +1051,9 @@ def build_snapshot(
         },
         "by_category": ledger["by_category"],
         "why": read_why(golden_path),
+        # The planner's own output. Optional: present once an execute run has
+        # exported its chain.
+        "plans": read_plans(BUILD_DIR / "execute-full.jsonl"),
         # Optional: present only once `make voice` has run.
         "voice": read_voice(
             BUILD_DIR / "voice.db",
